@@ -1,0 +1,63 @@
+# Driver packages for the offline repo on the USB stick.
+# During installation `chwd --autoconfigure` picks the right profile for the
+# hardware and installs from this repo, exactly as CachyOS would online.
+#
+# Source: CachyOS chwd, profiles/pci/graphic_drivers/profiles.toml.
+# scripts/fetch-offline-repo.sh warns if a chwd profile needs something missing here.
+
+# "pkg?" = optional: skipped with a warning if the repos do not have it.
+# Only graphics profiles are installed offline (celestia-configure runs chwd per
+# display class); other hardware can be configured online later: sudo chwd -a
+
+# nvidia-open-dkms (+ .prime for laptops); conditional: <kernel>-nvidia-open
+nvidia-utils
+egl-wayland
+nvidia-settings
+opencl-nvidia
+lib32-opencl-nvidia
+lib32-nvidia-utils
+libva-nvidia-driver
+lib32-vulkan-icd-loader
+cachyos-drm-awaiter
+linux-cachyos-nvidia-open
+nvidia-prime
+switcheroo-control
+
+# intel
+lib32-mesa
+vulkan-intel
+lib32-vulkan-intel
+gst-plugin-va
+linux-firmware-intel
+intel-media-driver
+vpl-gpu-rt
+opencl-mesa
+lib32-opencl-mesa
+# conditional, older Intel GPUs
+intel-media-sdk?
+libva-intel-driver-irql?
+
+# amd
+vulkan-radeon
+lib32-vulkan-radeon
+xf86-video-amdgpu
+linux-firmware-amdgpu
+
+# nouveau (old NVIDIA) and fallback
+nouveau-fw
+# conditional, NVIDIA cards of the 470 generation
+vulkan-nouveau?
+linux-firmware-nvidia?
+vulkan-swrast
+lib32-vulkan-swrast
+xf86-video-vesa
+
+# Virtual machines (for testing the ISO)
+virtualbox-guest-utils
+open-vm-tools
+xf86-input-vmmouse
+spice-vdagent
+qemu-guest-agent
+vulkan-virtio
+lib32-vulkan-virtio
+gtkmm3

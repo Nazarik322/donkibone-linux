@@ -1,0 +1,80 @@
+#!/usr/bin/env bash
+# Run by Hyprland (~/.config/caelestia/hypr-user.lua) right after autologin.
+# The session must never be usable without the password:
+#   1. hyprlock locks it immediately (compositor-level lock, keybinds disabled);
+#   2. once the caelestia shell is up, the lock is handed over to the Caelestia
+#      lock screen: hyprlock is killed without unlocking (Hyprland keeps the
+#      session locked, misc:allow_session_lock_restore lets caelestia take over);
+#   3. if no lock screen works at all, the session is ended, so greetd falls back
+#      to its password login.
+
+runtime_dir="${XDG_RUNTIME_DIR:-/tmp}"
+marker="$runtime_dir/celestia-session-started"
+hyprlock_conf=/usr/share/celestia/hyprlock.conf
+
+# Once per session, even if Hyprland fires the start event again.
+[[ -e "$marker" ]] && exit 0
+touch "$marker"
+
+shell_lock_state() { qs -c caelestia ipc call lock isLocked 2>/dev/null; }
+shell_locked() { [[ "$(shell_lock_state)" == "true" ]]; }
+
+# kill -0 also succeeds for an exited (zombie) child, so look at its state.
+alive() { [[ -r "/proc/$1/stat" && "$(awk '{print $3}' "/proc/$1/stat" 2>/dev/null)" != Z ]]; }
+
+give_up() {
+    loginctl terminate-session "${XDG_SESSION_ID:-}"
+    exit 1
+}
+
+hyprlock --config "$hyprlock_conf" &
+hyprlock_pid=$!
+
+# Wait for the caelestia shell (started in parallel by execs.lua), up to 30 s.
+shell_ready=false
+# hyprlock ended: 0 = the user unlocked it (done), anything else = it failed.
+check_hyprlock() {
+    if [[ -n "$hyprlock_pid" ]] && ! alive "$hyprlock_pid"; then
+        wait "$hyprlock_pid" && { /usr/lib/celestia/firstboot & exit 0; }
+        hyprlock_pid=""
+    fi
+}
+
+for _ in $(seq 300); do
+    check_hyprlock
+    if [[ "$(shell_lock_state)" =~ ^(true|false)$ ]]; then
+        shell_ready=true
+        break
+    fi
+    sleep 0.1
+done
+check_hyprlock
+
+if [[ -n "$hyprlock_pid" ]] && ! $shell_ready; then
+    # No shell: hyprlock stays as the lock screen.
+    /usr/lib/celestia/firstboot &
+    exit 0
+fi
+
+if $shell_ready; then
+    if [[ -n "$hyprlock_pid" ]]; then
+        kill -KILL "$hyprlock_pid" 2>/dev/null
+        wait "$hyprlock_pid" 2>/dev/null
+    fi
+    for _ in $(seq 50); do
+        qs -c caelestia ipc call lock lock >/dev/null 2>&1
+        shell_locked && break
+        sleep 0.1
+    done
+    if ! shell_locked; then
+        # Caelestia could not take the lock: relock with hyprlock, or end the session.
+        hyprlock --config "$hyprlock_conf" &
+        sleep 1
+        alive $! || give_up
+    fi
+else
+    # Neither the shell nor hyprlock is available.
+    give_up
+fi
+
+/usr/lib/celestia/firstboot &

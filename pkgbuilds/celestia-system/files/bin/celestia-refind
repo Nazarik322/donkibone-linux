@@ -1,0 +1,190 @@
+#!/usr/bin/env bash
+# Installs or repairs the Celestia boot menu (rEFInd on the EFI system partition).
+#   Windows boots by default after 5 seconds; arrows + Enter pick Celestia.
+#
+# Usage: sudo celestia-refind              install/update rEFInd, theme and config
+#        sudo celestia-refind --fix-order  only put rEFInd first in the UEFI boot order
+#                                          (use after a Windows update took over)
+set -euo pipefail
+
+ESP="${ESP:-/boot/efi}"
+THEME_SRC=/usr/share/celestia/refind
+REFIND_SRC=/usr/share/refind
+EFI_LABEL="Celestia"
+EFI_LOADER='\EFI\refind\refind_x64.efi'
+KERNEL_OPTIONS="${KERNEL_OPTIONS:-quiet loglevel=3 nowatchdog}"
+
+die() { echo "celestia-refind: $*" >&2; exit 1; }
+log() { echo "celestia-refind: $*"; }
+
+[[ $EUID -eq 0 ]] || die "run as root"
+[[ -d /sys/firmware/efi ]] || die "not booted in UEFI mode"
+mountpoint -q "$ESP" || die "$ESP is not mounted"
+
+# Device of a mount point, without the btrfs "[/subvol]" suffix.
+mount_dev() { findmnt -nvo SOURCE "$1"; }
+
+# findmnt reads these from udev; blkid probes the device when udev data is missing
+# (e.g. inside the installer chroot).
+dev_tag() {
+    local tag="$1" mnt="$2" value
+    value="$(findmnt -no "$tag" "$mnt")"
+    [[ -n "$value" ]] || value="$(blkid -s "$tag" -o value "$(mount_dev "$mnt")")"
+    echo "$value"
+}
+
+esp_dev="$(mount_dev "$ESP")"
+esp_disk="/dev/$(lsblk -no PKNAME "$esp_dev")"
+esp_part="$(cat "/sys/class/block/$(basename "$esp_dev")/partition")"
+
+esp_partuuid="$(dev_tag PARTUUID "$ESP")"
+
+# Boot number of the "Celestia" entry that starts rEFInd from THIS ESP.
+own_entry() {
+    local line
+    [[ -n "$esp_partuuid" ]] || return 0
+    while read -r line; do
+        if [[ "${line,,}" == *"${esp_partuuid,,}"* && "${line,,}" == *'\efi\refind\refind_x64.efi'* ]]; then
+            sed -nE 's/^Boot([0-9A-Fa-f]{4}).*/\1/p' <<< "$line"
+            return 0
+        fi
+    done < <(efibootmgr -v | grep -E "^Boot[0-9A-Fa-f]{4}\*? ${EFI_LABEL}\b")
+}
+
+fix_boot_order() {
+    local num n order
+    num="$(own_entry)"
+    # Entries left by an installation on another disk or partition are deleted.
+    for n in $(efibootmgr | sed -nE "s/^Boot([0-9A-Fa-f]{4})\*? ${EFI_LABEL}\b.*/\1/p"); do
+        if [[ "$n" != "$num" ]]; then
+            efibootmgr --quiet --bootnum "$n" --delete-bootnum
+            log "removed stale UEFI entry Boot$n"
+        fi
+    done
+    if [[ -z "$num" ]]; then
+        efibootmgr --quiet --create --disk "$esp_disk" --part "$esp_part" \
+            --loader "$EFI_LOADER" --label "$EFI_LABEL" --unicode
+        num="$(own_entry)"
+    fi
+    [[ -n "$num" ]] || die "could not create the UEFI boot entry"
+    order="$(efibootmgr | sed -n 's/^BootOrder: //p' | tr ',' '\n' | grep -vix "$num" | paste -sd, -)"
+    efibootmgr --quiet --bootorder "$num${order:+,$order}"
+    log "UEFI boot order: rEFInd ($num) first"
+}
+
+if [[ "${1:-}" == "--fix-order" ]]; then
+    fix_boot_order
+    exit 0
+fi
+
+# Where the kernels are, as rEFInd sees them.
+if mountpoint -q /boot; then
+    # Separate /boot partition (the layout the Celestia installer creates).
+    boot_partuuid="$(dev_tag PARTUUID /boot)"
+    prefix=""
+else
+    # /boot inside the root filesystem (manual partitioning).
+    boot_partuuid="$(dev_tag PARTUUID /)"
+    prefix="$(findmnt -no FSROOT /)"
+    prefix="${prefix%/}/boot"
+fi
+[[ -n "$boot_partuuid" ]] || die "cannot find the PARTUUID of the boot partition"
+# rEFInd matches volume GUIDs case-insensitively in theory, but some firmware
+# compares case-sensitively; EFI prints GUIDs in upper case.
+boot_partuuid="${boot_partuuid^^}"
+
+root_uuid="$(dev_tag UUID /)"
+root_fstype="$(findmnt -no FSTYPE /)"
+options="root=UUID=$root_uuid rw"
+if [[ "$root_fstype" == "btrfs" ]]; then
+    options+=" rootflags=subvol=$(findmnt -no FSROOT / | sed 's|^/||')"
+fi
+options+=" $KERNEL_OPTIONS"
+
+kernel=""
+for name in linux-cachyos linux-cachyos-lts linux; do
+    if [[ -f "/boot/vmlinuz-$name" ]]; then
+        kernel="$name"
+        break
+    fi
+done
+[[ -n "$kernel" ]] || die "no kernel found in /boot"
+
+# rEFInd binaries, filesystem drivers, default icons, Celestia theme.
+dest="$ESP/EFI/refind"
+mkdir -p "$dest/drivers_x64" "$dest/themes"
+install -m644 "$REFIND_SRC/refind_x64.efi" "$dest/refind_x64.efi"
+for driver in ext4 btrfs; do
+    install -m644 "$REFIND_SRC/drivers_x64/${driver}_x64.efi" "$dest/drivers_x64/"
+done
+rm -rf "$dest/icons" "$dest/themes/celestia"
+cp -r "$REFIND_SRC/icons" "$dest/icons"
+cp -r "$THEME_SRC/theme" "$dest/themes/celestia"
+
+# Windows Boot Manager: on our ESP, or on another EFI partition (Windows on a
+# different disk). Other ESPs are only mounted read-only to look.
+ESP_TYPE=c12a7328-f81f-11d2-ba4b-00a0c93ec93b
+windows_volume=""
+windows_found=false
+if [[ -f "$ESP/EFI/Microsoft/Boot/bootmgfw.efi" ]]; then
+    windows_found=true
+else
+    while read -r dev ptype; do
+        [[ "${ptype,,}" == "$ESP_TYPE" && "$dev" != "$esp_dev" ]] || continue
+        probe="$(mktemp -d)"
+        if mount -o ro "$dev" "$probe" 2>/dev/null; then
+            if [[ -f "$probe/EFI/Microsoft/Boot/bootmgfw.efi" ]]; then
+                windows_found=true
+                windows_volume="$(blkid -s PARTUUID -o value "$dev")"
+                windows_volume="${windows_volume^^}"
+            fi
+            umount "$probe"
+        fi
+        rmdir "$probe"
+        $windows_found && break
+    done < <(lsblk -rnpo PATH,PARTTYPE)
+fi
+
+windows_entry=""
+if $windows_found; then
+    windows_entry="
+menuentry \"Windows\" {
+    icon   /EFI/refind/themes/celestia/icons/os_windows.png${windows_volume:+
+    volume $windows_volume}
+    loader /EFI/Microsoft/Boot/bootmgfw.efi
+}"
+    default_selection="Windows"
+else
+    log "Windows Boot Manager not found: Celestia becomes the default"
+    default_selection="Celestia"
+fi
+
+cat > "$dest/refind.conf" <<EOF
+# Generated by celestia-refind. Re-run "sudo celestia-refind" after editing
+# /usr/bin/celestia-refind instead of changing this file by hand.
+
+timeout 5
+default_selection "$default_selection"
+scanfor manual
+use_nvram false
+resolution max
+hideui singleuser,hints,arrows,badges
+showtools reboot,shutdown,firmware
+include themes/celestia/theme.conf
+$windows_entry
+
+menuentry "Celestia" {
+    icon    /EFI/refind/themes/celestia/icons/os_celestia.png
+    volume  $boot_partuuid
+    loader  $prefix/vmlinuz-$kernel
+    initrd  $prefix/initramfs-$kernel.img
+    options "$options"
+    submenuentry "Recovery" {
+        initrd      $prefix/initramfs-$kernel-fallback.img
+        add_options "systemd.unit=multi-user.target"
+    }
+}
+EOF
+
+fix_boot_order
+log "installed to $dest (kernel: $kernel, default: $default_selection)"

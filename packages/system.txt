@@ -1,0 +1,166 @@
+# Packages of the installed system (they also form the live image, which the
+# installer copies to disk).
+#
+# Format: one package per line, '#' starts a comment.
+#   pkg?      optional: skipped with a warning if no repo or AUR has it
+#   a|b       alternatives: the first one that exists is used
+# Packages missing from the CachyOS/Arch repos are built from pkgbuilds/ or the AUR
+# by scripts/build-packages.sh.
+
+# ---------------------------------------------------------------- CachyOS base
+# Kept exactly as CachyOS ships it: kernel, firmware, tweaks, hardware detection.
+base
+base-devel
+linux-cachyos
+linux-firmware
+sof-firmware
+amd-ucode
+intel-ucode
+mkinitcpio
+cachyos-settings
+cachyos-hooks
+cachyos-keyring
+cachyos-mirrorlist
+cachyos-v3-mirrorlist
+cachyos-v4-mirrorlist
+cachyos-rate-mirrors
+chwd
+archlinux-keyring
+zram-generator
+sudo
+polkit
+paru
+pciutils
+usbutils
+hwinfo
+inxi
+power-profiles-daemon
+# Battery info for the shell; on critical battery it shuts the laptop down cleanly
+# (hibernation is unavailable without swap).
+upower
+ufw
+
+# Filesystems
+btrfs-progs
+dosfstools
+e2fsprogs
+exfatprogs
+ntfs-3g
+xfsprogs
+
+# Btrfs snapshots before/after every pacman transaction + graphical restore
+snapper
+snap-pac
+btrfs-assistant?
+
+# Network, Bluetooth
+networkmanager
+wpa_supplicant
+bluez
+bluez-utils
+
+# Audio
+pipewire
+pipewire-alsa
+pipewire-audio
+pipewire-jack
+pipewire-pulse
+wireplumber
+rtkit
+alsa-utils
+
+# Graphics base (vendor drivers are added by chwd during installation)
+mesa
+vulkan-icd-loader
+
+# Boot
+efibootmgr
+refind
+
+# Everyday CLI
+bash-completion
+curl
+git
+less
+lsof
+man-db
+nano
+rsync
+unzip
+wget
+
+# Fonts
+noto-fonts
+noto-fonts-cjk
+noto-fonts-emoji
+ttf-dejavu
+ttf-liberation
+
+# ------------------------------------------------------- Hyprland + caelestia
+# Mirrors the default components of caelestia-dots/caelestia manifest.toml.
+hyprland
+xdg-desktop-portal-hyprland
+xdg-desktop-portal-gtk
+uwsm
+hyprpicker
+hyprlock
+
+caelestia-shell
+caelestia-cli
+quickshell-git
+qt6-m3shapes-git
+app2unit
+caelestia-firefox-theme
+
+ttf-jetbrains-mono-nerd
+ttf-material-symbols-variable
+ttf-rubik-vf
+ttf-cascadia-code-nerd
+
+fish
+eza
+zoxide
+direnv
+starship
+foot
+fastfetch
+btop
+micro
+thunar
+thunar-volman
+gvfs
+udisks2
+tumbler
+firefox
+
+adw-gtk-theme
+papirus-icon-theme
+papirus-folders?
+qtengine?
+frameworkintegration
+darkly-bin?
+sweet-cursors|sweet-cursors-hyprcursor-git?
+
+gnome-keyring
+polkit-gnome
+pwvucontrol
+wl-clipboard
+cliphist
+trash-cli
+jq
+lazygit
+bat
+ripgrep
+ydotool
+inotify-tools
+gammastep
+geoclue
+xdg-user-dirs
+xdg-utils
+
+# Login: autologin straight into the Celestia lock screen
+greetd
+greetd-tuigreet
+
+# Our configs, theme, scripts
+celestia-system

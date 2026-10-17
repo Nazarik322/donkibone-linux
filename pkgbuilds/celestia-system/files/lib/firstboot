@@ -1,0 +1,29 @@
+#!/usr/bin/env bash
+# First login of a user: the post-install steps `caelestia install` would run.
+# Runs once per user, offline.
+
+state_dir="${XDG_STATE_HOME:-$HOME/.local/state}"
+marker="$state_dir/celestia/firstboot-done"
+[[ -e "$marker" ]] && exit 0
+
+xdg-user-dirs-update
+
+# Colour scheme and wallpaper (manifest.toml post_install)
+if [[ ! -f "$state_dir/caelestia/scheme.json" ]]; then
+    caelestia scheme set -n caelestia
+fi
+wallpaper="$HOME/Pictures/Wallpapers/celestia.webp"
+if [[ -f "$wallpaper" ]]; then
+    caelestia wallpaper -f "$wallpaper"
+fi
+
+# Firefox theme (manifest.toml firefox component)
+bash /usr/share/celestia/firefox/init_firefox.sh
+for profile in "$HOME"/.mozilla/firefox/*.default*/; do
+    [[ -d "$profile" ]] || continue
+    install -Dm644 /usr/share/celestia/firefox/userChrome.css "$profile/chrome/userChrome.css"
+    install -Dm644 /usr/share/celestia/firefox/user.js "$profile/user.js"
+done
+
+mkdir -p "$(dirname "$marker")"
+touch "$marker"

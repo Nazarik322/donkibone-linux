@@ -1,0 +1,26 @@
+# Based on caelestia-dots/caelestia packages/caelestia-firefox-theme.
+# Celestia: takes the native app from the pinned dots commit instead of a local checkout.
+
+pkgname='caelestia-firefox-theme'
+pkgver=1.0.0
+pkgrel=1
+pkgdesc='The native app component of the CaelestiaFox Firefox theme'
+arch=('any')
+url='https://github.com/caelestia-dots/caelestia'
+license=('GPL-3.0-only')
+depends=(
+  fish
+  jq
+  inotify-tools
+)
+makedepends=(git)
+# Keep in sync with _dots_commit in ../celestia-system/PKGBUILD
+_dots_commit=639dd6e55b8d0e95aec12499720fb6c434548022
+source=("caelestia-dots::git+$url.git#commit=$_dots_commit")
+sha256sums=('SKIP')
+
+package() {
+  local _native_app_dir="$srcdir/caelestia-dots/firefox/native_app"
+  install -Dm644 "$_native_app_dir/manifest.json" "$pkgdir"/usr/lib/mozilla/native-messaging-hosts/caelestiafox.json
+  install -Dm755 "$_native_app_dir/app.fish" "$pkgdir"/usr/lib/caelestia/caelestiafox
+}

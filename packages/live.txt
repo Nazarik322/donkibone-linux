@@ -1,0 +1,10 @@
+# Live-only packages: needed to run the installer from the USB stick.
+# cage, Calamares, zenity and mkinitcpio-archiso are removed from the installed
+# system by calamares/scripts/celestia-configure.
+cage
+cachyos-calamares-next
+zenity
+gptfdisk
+mkinitcpio-archiso
+arch-install-scripts
+squashfs-tools

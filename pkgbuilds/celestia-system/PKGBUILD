@@ -1,0 +1,73 @@
+# Celestia: caelestia dots as system defaults, login, boot menu theme, helper scripts.
+# files/generated/ is produced by scripts/make-theme.sh before this package is built.
+
+pkgname='celestia-system'
+pkgver=1.0.0
+pkgrel=1
+pkgdesc='Celestia defaults: caelestia dots for new users, autologin into the lock screen, rEFInd theme'
+arch=('any')
+url='https://github.com/caelestia-dots/caelestia'
+license=('GPL-3.0-only')
+depends=(
+  'caelestia-shell'
+  'caelestia-cli'
+  'hyprland'
+  'hyprlock'
+  'uwsm'
+  'greetd'
+  'greetd-tuigreet'
+  'refind'
+  'efibootmgr'
+  'util-linux'
+)
+makedepends=('git')
+backup=()
+# Keep in sync with _dots_commit in ../caelestia-firefox-theme/PKGBUILD
+_dots_commit=639dd6e55b8d0e95aec12499720fb6c434548022
+source=("caelestia-dots::git+$url.git#commit=$_dots_commit")
+sha256sums=('SKIP')
+
+package() {
+  local files="$startdir/files"
+  local dots="$srcdir/caelestia-dots"
+  local skel="$pkgdir/etc/skel"
+
+  [[ -d "$files/generated" ]] || { error "Run scripts/make-theme.sh first"; return 1; }
+
+  # caelestia dots: default components of manifest.toml, copied for every new user
+  local entry
+  for entry in hypr fish foot fastfetch btop micro uwsm; do
+    install -d "$skel/.config"
+    cp -r "$dots/$entry" "$skel/.config/$entry"
+  done
+  cp -r "$dots/thunar" "$skel/.config/Thunar"
+  install -Dm644 "$dots/starship.toml" "$skel/.config/starship.toml"
+
+  # Celestia user defaults (hypr-user.lua locks the session at start)
+  cp -r "$files/skel/." "$skel/"
+  install -Dm644 "$files/generated/wallpapers/celestia.webp" "$skel/Pictures/Wallpapers/celestia.webp"
+  install -Dm644 "$files/generated/wallpapers/celestia.webp" "$pkgdir/usr/share/celestia/wallpapers/celestia.webp"
+
+  # Firefox theme, applied on first login
+  install -Dm644 "$dots/firefox/user.js"        "$pkgdir/usr/share/celestia/firefox/user.js"
+  install -Dm644 "$dots/firefox/userChrome.css" "$pkgdir/usr/share/celestia/firefox/userChrome.css"
+  install -Dm755 "$dots/firefox/init_firefox.sh" "$pkgdir/usr/share/celestia/firefox/init_firefox.sh"
+
+  # Session scripts and tools
+  install -Dm755 "$files/lib/session-start" "$pkgdir/usr/lib/celestia/session-start"
+  install -Dm755 "$files/lib/firstboot"     "$pkgdir/usr/lib/celestia/firstboot"
+  install -Dm755 "$files/bin/celestia-refind" "$pkgdir/usr/bin/celestia-refind"
+  install -Dm755 "$files/bin/celestia-update" "$pkgdir/usr/bin/celestia-update"
+  install -Dm644 "$files/hooks/celestia-refind.hook" "$pkgdir/usr/share/libalpm/hooks/celestia-refind.hook"
+  install -Dm644 "$files/hooks/celestia-qt-update.hook" "$pkgdir/usr/share/libalpm/hooks/celestia-qt-update.hook"
+  install -Dm644 "$files/hyprlock/hyprlock.conf" "$pkgdir/usr/share/celestia/hyprlock.conf"
+
+  # greetd template, filled in by the installer
+  install -Dm644 "$files/greetd/config.toml" "$pkgdir/usr/share/celestia/greetd/config.toml"
+
+  # rEFInd theme
+  install -d "$pkgdir/usr/share/celestia/refind"
+  cp -r "$files/generated/refind" "$pkgdir/usr/share/celestia/refind/theme"
+
+  install -Dm644 "$dots/LICENSE" "$pkgdir/usr/share/licenses/$pkgname/LICENSE"
+}

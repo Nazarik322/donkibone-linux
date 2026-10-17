@@ -1,0 +1,12 @@
+[Trigger]
+Operation = Upgrade
+Type = Package
+Target = qt6-base
+Target = qt6-declarative
+Target = qt6-wayland
+Target = hyprland
+
+[Action]
+Description = Checking whether the caelestia shell needs a rebuild...
+When = PostTransaction
+Exec = /bin/sh -c 'pgrep -x celestia-update >/dev/null || echo "==> Qt or Hyprland was updated. Run celestia-update now (it rebuilds the caelestia shell), otherwise the desktop may not start after a reboot."'

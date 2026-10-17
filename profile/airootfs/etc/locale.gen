@@ -1,0 +1,4 @@
+# Locales of the live environment, generated during the ISO build
+# (see /etc/pacman.d/hooks/celestia-locale-gen.hook).
+en_US.UTF-8 UTF-8
+ru_RU.UTF-8 UTF-8

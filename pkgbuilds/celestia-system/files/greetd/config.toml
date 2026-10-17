@@ -1,0 +1,15 @@
+# Celestia login. The installer replaces @USER@ with the user created during setup.
+
+[terminal]
+vt = 1
+
+# At boot: autologin into Hyprland; the session locks itself immediately, so
+# the Caelestia lock screen is what you see and type your password into.
+[initial_session]
+command = "uwsm start -- hyprland.desktop"
+user = "@USER@"
+
+# After logging out: a minimal text login in the Celestia palette.
+[default_session]
+command = "tuigreet --time --remember --asterisks --greeting Celestia --cmd 'uwsm start -- hyprland.desktop' --theme 'border=magenta;text=white;prompt=magenta;time=gray;action=gray;button=magenta;input=white'"
+user = "greeter"

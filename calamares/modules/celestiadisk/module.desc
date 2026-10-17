@@ -1,0 +1,7 @@
+# Partitions the place chosen in celestia-diskpick (replaces the Calamares
+# partition module, which cannot be restricted enough to protect Windows).
+---
+type:       "job"
+name:       "celestiadisk"
+interface:  "python"
+script:     "main.py"

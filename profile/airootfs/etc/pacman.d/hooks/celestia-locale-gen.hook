@@ -1,0 +1,14 @@
+# remove from airootfs!
+# Generates the live locales from /etc/locale.gen while the image is being built.
+
+[Trigger]
+Operation = Install
+Operation = Upgrade
+Type = Package
+Target = glibc
+
+[Action]
+Description = Generating locales for the live environment...
+When = PostTransaction
+Depends = glibc
+Exec = /usr/bin/locale-gen

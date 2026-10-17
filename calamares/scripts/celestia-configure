@@ -1,0 +1,143 @@
+#!/usr/bin/env bash
+# Runs inside the target chroot after the live image was copied to disk.
+# Turns the live system into the installed one:
+#   live leftovers out -> pacman keyring -> kernel preset -> drivers (chwd, offline)
+#   -> login (greetd autologin into the lock screen) -> clock, firewall, user files
+set -uo pipefail
+user="$1"
+
+log()  { echo "celestia-configure: $*"; }
+warn() { echo "celestia-configure: WARNING: $*" >&2; }
+
+# ------------------------------------------------------------ live leftovers
+log "removing live environment files"
+rm -f  /etc/systemd/system/getty@tty1.service.d/autologin.conf
+rmdir  /etc/systemd/system/getty@tty1.service.d 2>/dev/null
+rm -f  /etc/sudoers.d/g_wheel
+rm -f  /etc/systemd/journald.conf.d/volatile-storage.conf
+rm -f  /etc/systemd/logind.conf.d/do-not-suspend.conf
+rm -f  /etc/mkinitcpio.conf.d/archiso.conf
+rm -f  /usr/local/bin/celestia-installer /usr/local/bin/celestia-diskpick /usr/local/bin/celestia-disks
+rm -rf /home/liveuser
+
+for pkg in cage cachyos-calamares-next zenity mkinitcpio-archiso; do
+    if pacman -Q "$pkg" &>/dev/null; then
+        pacman -Rns --noconfirm "$pkg" || warn "could not remove $pkg"
+    fi
+done
+
+# ------------------------------------------------------------ pacman keyring
+log "initializing the pacman keyring"
+pacman-key --init
+pacman-key --populate archlinux cachyos
+
+# ------------------------------------------------------------ kernel preset
+log "restoring the normal mkinitcpio preset"
+cat > /etc/mkinitcpio.d/linux-cachyos.preset <<'EOF'
+# mkinitcpio preset file for the 'linux-cachyos' package
+
+ALL_kver="/boot/vmlinuz-linux-cachyos"
+
+PRESETS=('default' 'fallback')
+
+default_image="/boot/initramfs-linux-cachyos.img"
+
+fallback_image="/boot/initramfs-linux-cachyos-fallback.img"
+fallback_options="-S autodetect"
+EOF
+
+# ------------------------------------------------------------ drivers
+log "detecting hardware and installing drivers (offline)"
+offline_conf=/tmp/celestia-offline-pacman.conf
+cat > "$offline_conf" <<'EOF'
+[options]
+Architecture = x86_64 x86_64_v3
+SigLevel = Required DatabaseOptional
+LocalFileSigLevel = Optional
+DisableSandbox
+
+[celestia-offline]
+SigLevel = Optional TrustAll
+Server = file:///var/cache/celestia-offline
+EOF
+# Graphics only, one display class at a time: chwd stops at the first failing
+# profile, so a missing optional driver (fingerprint reader, Wi-Fi, ...) must not
+# cost the GPU driver. Other hardware can be set up later online: sudo chwd -a
+if pacman --config "$offline_conf" -Sy --noconfirm; then
+    for class in 0300 0302 0380; do   # VGA, 3D, display controllers
+        chwd --autoconfigure "$class" --pmconfig "$offline_conf" \
+            || warn "chwd failed for device class $class; generic mesa drivers stay in place"
+    done
+    log "drivers installed: $(chwd --list-installed 2>/dev/null | tr -s ' \n' ' ')"
+else
+    warn "offline driver repo unavailable; the system will boot with the generic mesa drivers"
+fi
+rm -f "$offline_conf"
+
+# PCI vendors of all display controllers (class 03xx), e.g. "10de" or "8086 10de".
+gpu_vendors="$(lspci -n | awk '$2 ~ /^03/ {split($3, id, ":"); print id[1]}' | sort -u | tr '\n' ' ')"
+
+# Only when NVIDIA drives the display alone: on hybrid laptops (Intel/AMD + NVIDIA)
+# forcing the NVIDIA GLX/VA-API vendor breaks apps rendered on the integrated GPU.
+if pacman -Q nvidia-utils &>/dev/null && [[ "$gpu_vendors" == "10de " ]]; then
+    log "NVIDIA: environment for Hyprland"
+    install -d /etc/environment.d
+    cat > /etc/environment.d/90-celestia-nvidia.conf <<'EOF'
+# Written by the Celestia installer for NVIDIA GPUs (Hyprland wiki recommendations).
+LIBVA_DRIVER_NAME=nvidia
+__GLX_VENDOR_LIBRARY_NAME=nvidia
+NVD_BACKEND=direct
+EOF
+fi
+
+# ------------------------------------------------------------ login
+log "autologin for $user into the Celestia lock screen"
+install -d /etc/greetd
+sed "s/@USER@/$user/" /usr/share/celestia/greetd/config.toml > /etc/greetd/config.toml
+
+# The user page creates the home from /etc/skel; copy again so that files added
+# by packages after useradd ran are present too (same as the CachyOS installer).
+runuser -u "$user" -- cp -rn /etc/skel/. "/home/$user/"
+
+# Hyprland keyboard: use the layouts chosen in the installer (the keyboard module
+# wrote them to the X11 config); keep the us,ru default if there is none.
+xkb_conf=/etc/X11/xorg.conf.d/00-keyboard.conf
+xkb_value() { sed -nE "s/.*Option[[:space:]]+\"$1\"[[:space:]]+\"([^\"]*)\".*/\1/p" "$xkb_conf" 2>/dev/null | head -n1; }
+kb_layout="$(xkb_value XkbLayout)"
+if [[ -n "$kb_layout" ]]; then
+    kb_variant="$(xkb_value XkbVariant)"
+    kb_options="$(xkb_value XkbOptions)"
+    [[ "$kb_layout" == *,* && -z "$kb_options" ]] && kb_options="grp:alt_shift_toggle"
+    log "keyboard for Hyprland: layout=$kb_layout variant=$kb_variant options=$kb_options"
+    runuser -u "$user" -- sed -i \
+        -e "s|^\(\s*kb_layout  = \)\".*\"|\1\"$kb_layout\"|" \
+        -e "s|^\(\s*kb_variant = \)\".*\"|\1\"$kb_variant\"|" \
+        -e "s|^\(\s*kb_options = \)\".*\"|\1\"$kb_options\"|" \
+        "/home/$user/.config/caelestia/hypr-user.lua"
+fi
+
+# ------------------------------------------------------------ clock, firewall
+# Windows keeps the hardware clock in local time; do the same so neither OS
+# shows the wrong time after switching.
+printf '0.0 0 0.0\n0\nLOCAL\n' > /etc/adjtime
+
+if [[ -f /etc/ufw/ufw.conf ]]; then
+    sed -i 's/^ENABLED=.*/ENABLED=yes/' /etc/ufw/ufw.conf
+fi
+
+# ------------------------------------------------------------ snapshots
+# snap-pac snapshots / before and after every pacman transaction; restore with
+# btrfs-assistant. No timeline snapshots, at most 10 kept. /home is not included.
+if [[ "$(findmnt -no FSTYPE /)" == btrfs ]] && command -v snapper >/dev/null; then
+    log "configuring snapper for /"
+    if snapper --no-dbus -c root create-config / \
+        && snapper --no-dbus -c root set-config TIMELINE_CREATE=no NUMBER_LIMIT=10 NUMBER_LIMIT_IMPORTANT=5; then
+        systemctl enable snapper-cleanup.timer
+        snapper --no-dbus -c root create --description "Celestia: fresh installation" --userdata important=yes
+    else
+        warn "snapper configuration failed; snapshots are disabled"
+    fi
+fi
+
+log "done"
+exit 0

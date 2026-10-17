@@ -1,0 +1,8 @@
+#!/usr/bin/env bash
+# Host side, before configuring the target: makes the offline driver repo from
+# the USB stick visible inside the target chroot.
+set -euo pipefail
+root="$1"
+
+install -d "$root/var/cache/celestia-offline"
+mount --bind -o ro /opt/celestia-offline "$root/var/cache/celestia-offline"

@@ -1,0 +1,96 @@
+#!/usr/bin/env bash
+# "Where to install Celestia" window, shown before the installer. Lists every
+# disk area; Windows and data partitions are shown locked and cannot be picked.
+# Nothing is written here: the choice is saved to /run/celestia/target and the
+# installer's first step (celestiadisk) re-checks it before touching the disk.
+#
+# Exit: 0 choice saved, 1 user wants to leave (reboot/power off handled here).
+set -uo pipefail
+
+state=/run/celestia
+mkdir -p "$state"
+rm -f "$state/target"
+
+export ADW_DEBUG_COLOR_SCHEME=prefer-dark GTK_THEME=Adwaita:dark
+z() { zenity --width=900 "$@" 2>/dev/null; }
+# zenity --text is Pango markup: disk models and filesystem labels must not be
+# able to break it (e.g. a label containing "<" or "&").
+esc() { local s="${1//&/\&amp;}"; s="${s//</\&lt;}"; printf '%s' "${s//>/\&gt;}"; }
+
+leave() {
+    choice="$(z --list --title "Celestia" --text "Установка не начата. Что сделать?" \
+        --column "Действие" "Вернуться к выбору диска" "Перезагрузить" "Выключить" --height=320)"
+    case "$choice" in
+        "Перезагрузить") systemctl reboot ;;
+        "Выключить") systemctl poweroff ;;
+    esac
+    exit 1
+}
+
+while true; do
+    if ! celestia-disks scan > "$state/scan.json" 2> "$state/scan.log"; then
+        z --error --title "Celestia" --text "Не удалось прочитать диски.\n\nПодробности: $state/scan.log"
+        leave
+    fi
+
+    # Warnings (BitLocker, legacy Windows) need an explicit OK.
+    while IFS= read -r warning; do
+        [[ -n "$warning" ]] || continue
+        z --question --title "Внимание" --ok-label "Понятно, продолжить" --cancel-label "Выйти" \
+            --text "$(esc "$warning")" || leave
+    done < <(jq -r '.warnings[]' "$state/scan.json")
+
+    rows=()
+    while IFS=$'\t' read -r id title where; do
+        rows+=(FALSE "$id" "$title" "$where")
+    done < <(jq -r '.options[] | [.id, .title, .where] | @tsv' "$state/scan.json")
+    while IFS=$'\t' read -r dev what disk reason; do
+        rows+=(FALSE "locked" "🔒 $dev — $what (не трогаем: $reason)" "$disk")
+    done < <(jq -r '.protected[] | [.device, (.what + ", " + .size), .disk, .reason] | @tsv' "$state/scan.json")
+
+    if ! jq -e '.options | length > 0' "$state/scan.json" >/dev/null; then
+        z --error --title "Нет места для установки" --text \
+"Не найдено подходящего места (нужно не меньше 30 ГБ).
+
+Освободи место в Windows: «Управление дисками» → правый клик по диску C: → «Сжать том»
+(или удали ненужный раздел), затем снова загрузись с флешки.
+
+Разделы Windows и разделы с данными установщик никогда не трогает."
+        leave
+    fi
+
+    picked="$(z --list --radiolist --title "Куда установить Celestia" --height=560 \
+        --text "Выбери место для установки. Строки с 🔒 — Windows, данные или флешка: их выбрать нельзя." \
+        --column "" --column "id" --column "Место" --column "Диск" \
+        --hide-column=2 --print-column=2 --ok-label "Далее" --cancel-label "Выход" \
+        "${rows[@]}")" || leave
+
+    if [[ -z "$picked" || "$picked" == "locked" ]]; then
+        z --warning --title "Celestia" --text "Этот раздел защищён (Windows, данные или флешка) — выбери другое место."
+        continue
+    fi
+
+    opt="$(jq -c --arg id "$picked" '.options[] | select(.id == $id)' "$state/scan.json")"
+    title="$(jq -r '.title' <<< "$opt")"
+    where="$(jq -r '.where' <<< "$opt")"
+    effect="$(jq -r '.effect' <<< "$opt")"
+    untouched="$(jq -r --arg d "$(jq -r '.disk' <<< "$opt")" \
+        '[.protected[] | select(.disk | contains($d + ",")) | "  • " + .device + " — " + .what] | join("\n")' "$state/scan.json")"
+    summary="<b>$(esc "$title")</b>\n$(esc "$where")\n\n$(esc "$effect")"
+    [[ -n "$untouched" ]] && summary+="\n\nНа этом диске останутся нетронутыми:\n$(esc "$untouched")"
+
+    if [[ "$(jq -r '.destructive' <<< "$opt")" == "true" ]]; then
+        word="$(z --entry --title "Подтверди удаление данных" \
+            --text "$summary\n\n<b>Данные в выбранном месте будут удалены без возможности восстановления.</b>\nЧтобы продолжить, введи латиницей слово ERASE:")" || continue
+        if [[ "$(tr '[:lower:]' '[:upper:]' <<< "${word// /}")" != "ERASE" ]]; then
+            z --info --title "Celestia" --text "Слово не совпало — ничего не выбрано, возвращаемся к списку."
+            continue
+        fi
+    else
+        z --question --title "Подтверди место установки" --ok-label "Установить сюда" --cancel-label "Назад" \
+            --text "$summary" || continue
+    fi
+
+    echo "$picked" > "$state/target"
+    exit 0
+done

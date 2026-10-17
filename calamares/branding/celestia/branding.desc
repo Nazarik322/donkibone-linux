@@ -1,0 +1,34 @@
+# Celestia installer branding. Images in generated/ come from scripts/make-theme.sh.
+---
+componentName:  celestia
+
+welcomeStyleCalamares:   false
+welcomeExpandingLogo:   true
+windowExpanding:    fullscreen
+windowSize: 1280px,800px
+windowPlacement: center
+sidebar: widget
+navigation: widget
+
+strings:
+    productName:         Celestia
+    shortProductName:    Celestia
+    version:             CachyOS + caelestia
+    shortVersion:        Celestia
+    versionedName:       Celestia
+    shortVersionedName:  Celestia
+    bootloaderEntryName: Celestia
+
+images:
+    productLogo:         "generated/logo.png"
+    productIcon:         "generated/icon.png"
+    productWelcome:      "generated/welcome.png"
+
+style:
+   SidebarBackground:        "#1c1b1f"
+   SidebarText:              "#c8c5d1"
+   SidebarTextCurrent:       "#2a2a60"
+   SidebarBackgroundCurrent: "#c2c1ff"
+
+slideshow:               "show.qml"
+slideshowAPI: 2

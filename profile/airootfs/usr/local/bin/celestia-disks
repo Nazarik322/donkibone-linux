@@ -1,0 +1,535 @@
+#!/usr/bin/env python3
+"""Celestia disk planner: finds where Celestia can be installed and creates its
+partitions. Anything that could hold Windows or user data is never touched.
+
+  celestia-disks scan         print JSON: install options, protected partitions, warnings
+  celestia-disks apply <id>   re-check option <id>, partition and format it, print the
+                              Calamares "partitions" list as JSON
+
+apply exit codes: 0 done, 2 refused (nothing was written), 3 failed while writing.
+
+Safety rules:
+  * offered targets: unallocated space on GPT disks, existing *Linux* partitions,
+    whole disks that contain nothing but Linux partitions (or nothing at all);
+  * never offered: Windows/Microsoft partition types, NTFS, BitLocker, exFAT, FAT,
+    encrypted/RAID/LVM members, unknown filesystems, mounted or active swap
+    partitions, EFI partitions, the USB stick the installer runs from;
+  * apply rescans the disks, refuses unless the option still exists unchanged,
+    checks that every new partition lies inside the chosen area and overlaps
+    nothing, and afterwards verifies all other partitions are exactly as before.
+"""
+
+import json
+import math
+import os
+import re
+import subprocess
+import sys
+import tempfile
+import time
+
+KiB, MiB, GiB = 1024, 1024 ** 2, 1024 ** 3
+MIN_TARGET = 30 * GiB          # smallest area offered for installation
+ESP_SIZE = 512 * MiB           # new EFI partition, when the disk has no usable one
+BOOT_SIZE = 2 * GiB            # /boot (ext4, read by rEFInd)
+ESP_MIN_FREE = 32 * MiB        # free space needed to put rEFInd on an existing ESP
+
+ESP_TYPE = "c12a7328-f81f-11d2-ba4b-00a0c93ec93b"
+MICROSOFT_TYPES = {
+    "e3c9e316-0b5c-4db8-817d-f92df00215ae",  # Microsoft reserved
+    "de94bba4-06d1-4d40-a16a-bfd50179d6ac",  # Windows recovery
+    "ebd0a0a2-b9e5-4433-87c0-68b6b72699c7",  # Microsoft basic data
+    "5808c8aa-7e8f-42e0-85d2-e1e90434cfb3",  # LDM metadata
+    "af9b60a0-1431-4f62-bc68-3311714a69ad",  # LDM data
+    "e75caf8f-f680-4cee-afa3-b001e56efc2d",  # Storage Spaces
+}
+LINUX_TYPES = {
+    "0fc63daf-8483-4772-8e79-3d69d8477de4",  # Linux filesystem
+    "4f68bce3-e8cd-4db1-96e7-fbcaf984b709",  # Linux root (x86-64)
+    "933ac7e1-2eb4-4f13-b844-0e14e2aef915",  # Linux /home
+    "bc13c2ff-59e6-4262-a352-b275fd6f7172",  # Linux extended boot
+    "0657fd6d-a4ab-43c4-84e5-0933c84b4f4f",  # Linux swap
+    "83", "82",                              # MBR: Linux, Linux swap
+}
+LINUX_FS = {"ext2", "ext3", "ext4", "btrfs", "xfs", "f2fs", "swap", ""}
+
+LAYOUT_ESP = ("ef00", "EFI system", "fat32", "/boot/efi")
+LAYOUT_BOOT = ("8300", "celestia-boot", "ext4", "/boot")
+LAYOUT_ROOT = ("8304", "celestia-root", "btrfs", "/")
+
+
+class Refused(Exception):
+    """Nothing has been written; installation must not continue."""
+
+
+class WriteFailed(Exception):
+    """Something went wrong after the disk was modified."""
+
+
+def log(msg):
+    print(f"celestia-disks: {msg}", file=sys.stderr)
+
+
+def run(cmd, check=True):
+    log("$ " + " ".join(cmd))
+    res = subprocess.run(cmd, capture_output=True, text=True)
+    if res.stderr.strip():
+        log(res.stderr.strip())
+    if check and res.returncode != 0:
+        raise subprocess.CalledProcessError(res.returncode, cmd, res.stdout, res.stderr)
+    return res.stdout
+
+
+def gib(n):
+    return f"{n / GiB:.1f} ГБ".replace(".", ",")
+
+
+# ------------------------------------------------------------------ discovery
+
+
+def lsblk():
+    out = run(["lsblk", "-J", "-b", "-p", "-o",
+               "NAME,PATH,TYPE,SIZE,MODEL,TRAN,RM,RO,PTTYPE,FSTYPE,LABEL,UUID,"
+               "PARTTYPE,PARTUUID,PARTLABEL,MOUNTPOINTS,PKNAME"])
+    return json.loads(out)["blockdevices"]
+
+
+def sfdisk_table(disk):
+    res = subprocess.run(["sfdisk", "--json", disk], capture_output=True, text=True)
+    if res.returncode != 0:
+        return None  # no partition table
+    return json.loads(res.stdout)["partitiontable"]
+
+
+def disk_geometry(disk):
+    """(logical sector size, total sectors)"""
+    ss, size = run(["lsblk", "-bdno", "LOG-SEC,SIZE", disk]).split()
+    return int(ss), int(size) // int(ss)
+
+
+def active_swaps():
+    try:
+        with open("/proc/swaps") as f:
+            return {line.split()[0] for line in f.readlines()[1:]}
+    except OSError:
+        return set()
+
+
+def live_medium_disks(devices):
+    """Disks backing the running installer (USB stick, or the drive holding the ISO file)."""
+    sources = set()
+    for mnt in ("/run/archiso/bootmnt", "/run/archiso/img_dev"):
+        res = subprocess.run(["findmnt", "-nvo", "SOURCE", mnt], capture_output=True, text=True)
+        if res.returncode == 0 and res.stdout.strip():
+            sources.add(os.path.realpath(res.stdout.strip()))
+    disks = set()
+    for disk in devices:
+        nodes = [disk] + disk.get("children", [])
+        if any(os.path.realpath(n["path"]) in sources for n in nodes):
+            disks.add(disk["path"])
+    return disks
+
+
+def inspect_esp(path):
+    """(has Windows boot manager, free bytes) of an EFI partition, mounted read-only.
+    has Windows is None when the partition could not be checked (treated as Windows)."""
+    with tempfile.TemporaryDirectory(prefix="celestia-esp-") as mnt:
+        res = subprocess.run(["mount", "-o", "ro,noexec,nosuid,nodev", path, mnt],
+                             capture_output=True, text=True)
+        if res.returncode != 0:
+            log(f"cannot inspect EFI partition {path}: {res.stderr.strip()}")
+            return None, 0
+        try:
+            windows = any(os.path.isfile(os.path.join(mnt, *p)) for p in (
+                ("EFI", "Microsoft", "Boot", "bootmgfw.efi"),
+                ("efi", "microsoft", "boot", "bootmgfw.efi"),
+                ("EFI", "MICROSOFT", "BOOT", "BOOTMGFW.EFI")))
+            st = os.statvfs(mnt)
+            return windows, st.f_bavail * st.f_frsize
+        finally:
+            subprocess.run(["umount", mnt], capture_output=True)
+
+
+def holders(path):
+    """Devices stacked on a block device (md RAID, LVM, dm-crypt), from sysfs."""
+    try:
+        return os.listdir(f"/sys/class/block/{os.path.basename(path)}/holders")
+    except OSError:
+        return []
+
+
+def disk_in_use(disk):
+    """Why a whole disk without usable partitions must not be touched, or None."""
+    sig = disk.get("fstype") or ""
+    if sig:
+        return f"на всём диске есть данные ({sig})"
+    if holders(disk["path"]) or any(c["type"] != "part" for c in disk.get("children", [])):
+        return "диск входит в RAID/LVM/шифрование"
+    return None
+
+
+def classify(part, mounted, swaps):
+    """Why a partition must not be touched, or None if it may be reused for Linux."""
+    ptype = (part.get("parttype") or "").lower().removeprefix("0x")
+    fs = part.get("fstype") or ""
+    if mounted or part["path"] in swaps:
+        return "используется сейчас"
+    if holders(part["path"]) or part.get("children"):
+        return "входит в RAID/LVM/шифрование"
+    if ptype == ESP_TYPE:
+        return "загрузочный раздел EFI"
+    if fs == "BitLocker":
+        return "зашифрован BitLocker"
+    if ptype in MICROSOFT_TYPES:
+        return "раздел Windows"
+    if fs not in LINUX_FS:
+        return f"данные ({fs})"
+    if ptype not in LINUX_TYPES:
+        return "неизвестный тип раздела"
+    return None
+
+
+CELESTIA_PARTLABELS = {"celestia-boot", "celestia-root"}
+
+
+def is_celestia_part(part):
+    """Partitions created by a previous (possibly interrupted) Celestia installation."""
+    if (part.get("partlabel") or "") in CELESTIA_PARTLABELS:
+        return True
+    # Its own EFI partition: GPT name "EFI system" + FAT label CELESTIA, no Windows on it.
+    return ((part.get("parttype") or "").lower() == ESP_TYPE and part.get("label") == "CELESTIA"
+            and (part.get("partlabel") or "") == LAYOUT_ESP[1] and not part.get("_windows_esp"))
+
+
+def describe_part(part):
+    bits = [part.get("fstype") or "без файловой системы"]
+    if part.get("label"):
+        bits.append(f"«{part['label']}»")
+    return ", ".join(bits)
+
+
+def free_areas(table):
+    """Unallocated, 1 MiB-aligned areas of a GPT table, as (start, end) sectors inclusive."""
+    ss = table.get("sectorsize", 512)
+    align = MiB // ss
+    first, last = table["firstlba"], table["lastlba"]
+    parts = sorted(table.get("partitions", []), key=lambda p: p["start"])
+    areas, cursor = [], first
+    for p in parts + [{"start": last + 1, "size": 0}]:
+        if p["start"] > cursor:
+            start = math.ceil(cursor / align) * align
+            end = ((p["start"]) // align) * align - 1
+            if end > start:
+                areas.append((start, end))
+        cursor = max(cursor, p["start"] + p["size"])
+    return areas
+
+
+def scan():
+    devices = [d for d in lsblk() if d["type"] == "disk" and not d.get("ro")
+               and not d["path"].startswith(("/dev/zram", "/dev/loop", "/dev/sr"))]
+    swaps = active_swaps()
+    live = live_medium_disks(devices)
+    options, protected, warnings = [], [], []
+    windows_found, legacy_windows = False, False
+
+    for disk in devices:
+        path = disk["path"]
+        name = f"{(disk.get('model') or 'Диск').strip()} ({path}, {gib(disk['size'])})"
+        parts = [p for p in disk.get("children", []) if p["type"] == "part"]
+        is_live = path in live
+
+        # A filesystem/RAID/encryption signature on the whole device, or a device
+        # stacked on it (md RAID such as Intel RST, LVM, dm-crypt): the disk holds
+        # data even without a partition table. Never offer anything on it.
+        whole_disk_use = disk_in_use(disk)
+        if whole_disk_use and is_live:
+            whole_disk_use = "флешка с установщиком"
+        if whole_disk_use:
+            protected.append({"device": path, "disk": name, "size": gib(disk["size"]),
+                              "what": "весь диск", "reason": whole_disk_use})
+            if disk.get("fstype") in ("ntfs", "BitLocker"):
+                windows_found = True
+            continue
+
+        # ESPs: does one hold Windows, can rEFInd fit on it?
+        esp_candidates = []
+        for p in parts:
+            if (p.get("parttype") or "").lower() == ESP_TYPE:
+                has_windows, free = inspect_esp(p["path"])
+                # Fail closed: an ESP that cannot be checked may hold Windows' boot manager.
+                p["_windows_esp"] = has_windows is not False
+                p["_esp_unchecked"] = has_windows is None
+                windows_found |= bool(has_windows)
+                if free >= ESP_MIN_FREE:
+                    esp_candidates.append(p)
+
+        leftovers = [p for p in parts if is_celestia_part(p) and not is_live
+                     and not any(m for m in (p.get("mountpoints") or []) if m)
+                     and not holders(p["path"]) and not p.get("children")]
+        blocked = []
+        for p in parts:
+            if p in leftovers:
+                continue
+            mounted = any(m for m in (p.get("mountpoints") or []) if m)
+            reason = classify(p, mounted, swaps)
+            if p.get("fstype") == "ntfs" or (p.get("parttype") or "").lower() in MICROSOFT_TYPES:
+                windows_found = True
+                if disk.get("pttype") == "dos":
+                    legacy_windows = True
+            if p.get("_windows_esp"):
+                reason = ("загрузчик (не удалось проверить — возможно, Windows)"
+                          if p.get("_esp_unchecked") else "загрузчик Windows")
+            if is_live:
+                reason = "флешка с установщиком"
+            if reason:
+                # An EFI partition without Windows does not stop wiping the whole disk.
+                if reason != "загрузочный раздел EFI":
+                    blocked.append(p)
+                protected.append({"device": p["path"], "disk": name, "size": gib(p["size"]),
+                                  "what": describe_part(p), "reason": reason})
+                continue
+            if disk.get("pttype") != "gpt" or p["size"] < MIN_TARGET:
+                continue
+            options.append({
+                "id": f"part:{path}:{p['partuuid']}",
+                "kind": "part",
+                "delete": [p["partuuid"].lower()],
+                "disk": path,
+                "title": f"Раздел Linux {p['path']} — {gib(p['size'])} ({describe_part(p)})",
+                "where": name,
+                "effect": f"Раздел {p['path']} ({describe_part(p)}) будет СТЁРТ, "
+                          f"на его месте установится Celestia. Остальные разделы не изменятся.",
+                "destructive": True,
+            })
+
+        if is_live:
+            continue
+
+        if disk.get("pttype") == "gpt" and any(p.get("partlabel") == "celestia-root" for p in leftovers):
+            listing = ", ".join(f"{p['path']} ({describe_part(p)}, {gib(p['size'])})" for p in leftovers)
+            options.append({
+                "id": f"part:{path}:" + "+".join(p["partuuid"].lower() for p in leftovers),
+                "kind": "part",
+                "delete": [p["partuuid"].lower() for p in leftovers],
+                "disk": path,
+                "title": f"Предыдущая установка Celestia — {gib(sum(p['size'] for p in leftovers))}",
+                "where": name,
+                "effect": f"Разделы прошлой (или прерванной) установки Celestia будут СТЁРТЫ: {listing}. "
+                          "На их месте установится Celestia заново. Остальные разделы не изменятся.",
+                "destructive": True,
+            })
+
+        table = sfdisk_table(path)
+        if table and table.get("label") == "gpt":
+            for start, end in free_areas(table):
+                size = (end - start + 1) * table.get("sectorsize", 512)
+                if size < MIN_TARGET:
+                    continue
+                options.append({
+                    "id": f"free:{path}:{start}:{end}",
+                    "kind": "free",
+                    "disk": path,
+                    "title": f"Свободное место — {gib(size)}",
+                    "where": name,
+                    "effect": "Celestia установится в свободное (неразмеченное) место. "
+                              "Существующие разделы, включая Windows, не изменятся.",
+                    "destructive": False,
+                })
+
+        if not blocked and disk["size"] >= MIN_TARGET:
+            contents = ", ".join(f"{p['path']} ({describe_part(p)})" for p in parts) or "пусто"
+            options.append({
+                "id": f"disk:{path}:{disk['size']}:{len(parts)}",
+                "kind": "disk",
+                "disk": path,
+                "title": f"Весь диск — {gib(disk['size'])}",
+                "where": name,
+                "effect": f"ВЕСЬ диск {path} будет СТЁРТ (сейчас на нём: {contents}). "
+                          "Другие диски не изменятся.",
+                "destructive": bool(parts),
+            })
+
+        for opt in options:
+            if opt["disk"] == path and opt["kind"] in ("free", "part"):
+                # Never reuse an ESP that this option is about to delete.
+                usable = [e for e in esp_candidates if e["partuuid"].lower() not in opt.get("delete", [])]
+                opt["reuse_esp"] = usable[0]["path"] if usable else None
+
+    if any(p["reason"] == "зашифрован BitLocker" for p in protected):
+        warnings.append("На компьютере включён BitLocker. После установки Windows может один раз "
+                        "попросить ключ восстановления — заранее найди его на "
+                        "aka.ms/myrecoverykey (учётная запись Microsoft) или распечатай.")
+    if legacy_windows and not any(p["reason"] == "загрузчик Windows" for p in protected):
+        warnings.append("Похоже, Windows установлена в старом режиме (Legacy/MBR). Меню выбора "
+                        "системы не сможет её запустить — Windows будет доступна только через "
+                        "меню загрузки BIOS.")
+
+    return {"options": options, "protected": protected, "warnings": warnings,
+            "windows": windows_found}
+
+
+# ------------------------------------------------------------------ apply
+
+
+def gpt_snapshot(table, skip_uuids=()):
+    return {p["uuid"].lower(): (p["start"], p["size"], p["type"].lower())
+            for p in table.get("partitions", []) if p["uuid"].lower() not in skip_uuids}
+
+
+def apply(option_id):
+    current = {o["id"]: o for o in scan()["options"]}
+    opt = current.get(option_id)
+    if not opt:
+        raise Refused("Выбранное место больше недоступно или изменилось. Диск не изменён.")
+
+    disk = opt["disk"]
+    table = sfdisk_table(disk) if opt["kind"] != "disk" else None
+    ss, total = disk_geometry(disk)
+    align = MiB // ss
+
+    delete_nums, keep = [], {}
+    if opt["kind"] == "free":
+        _, _, start, end = option_id.split(":")
+        start, end = int(start), int(end)
+        keep = gpt_snapshot(table)
+        new_layout = [LAYOUT_BOOT, LAYOUT_ROOT] if opt.get("reuse_esp") else [LAYOUT_ESP, LAYOUT_BOOT, LAYOUT_ROOT]
+    elif opt["kind"] == "part":
+        delete_uuids = option_id.split(":")[2].lower().split("+")
+        targets = [p for p in table["partitions"] if p["uuid"].lower() in delete_uuids]
+        if len(targets) != len(delete_uuids):
+            raise Refused("Раздел не найден. Диск не изменён.")
+        delete_nums = [int(re.search(r"(\d+)$", t["node"]).group(1)) for t in targets]
+        start = math.ceil(min(t["start"] for t in targets) / align) * align
+        end = max(t["start"] + t["size"] - 1 for t in targets)
+        # Anything kept between the deleted partitions is caught by the overlap check below.
+        keep = gpt_snapshot(table, delete_uuids)
+        new_layout = [LAYOUT_BOOT, LAYOUT_ROOT] if opt.get("reuse_esp") else [LAYOUT_ESP, LAYOUT_BOOT, LAYOUT_ROOT]
+    else:  # whole disk
+        start, end = align, ((total - 34) // align) * align - 1
+        new_layout = [LAYOUT_ESP, LAYOUT_BOOT, LAYOUT_ROOT]
+
+    # Plan sector ranges inside [start, end]
+    sizes = {"/boot/efi": ESP_SIZE, "/boot": BOOT_SIZE}
+    plan, cursor = [], start
+    for code, label, fs, mnt in new_layout:
+        if mnt == "/":
+            p_end = end
+        else:
+            p_end = cursor + sizes[mnt] // ss - 1
+        plan.append((cursor, p_end, code, label, fs, mnt))
+        cursor = p_end + 1
+    root_size = (plan[-1][1] - plan[-1][0] + 1) * ss
+    if root_size < MIN_TARGET - BOOT_SIZE - ESP_SIZE:
+        raise Refused("Слишком мало места. Диск не изменён.")
+
+    # Overlap check against every partition that stays
+    for p_start, p_end, *_ in plan:
+        if p_start < start or p_end > end:
+            raise Refused("Ошибка расчёта разметки (выход за выбранную область). Диск не изменён.")
+        for k_start, k_size, _ in keep.values():
+            if p_start <= k_start + k_size - 1 and k_start <= p_end:
+                raise Refused("Новый раздел пересёкся бы с существующим. Диск не изменён.")
+
+    # ---- writing starts here
+    try:
+        sg = ["sgdisk", "-a", str(align)]
+        if opt["kind"] == "disk":
+            run(["wipefs", "-a", disk])
+            run(sg + ["-Z", disk], check=False)
+            run(sg + ["-o", disk])
+        for num in delete_nums:
+            run(sg + ["-d", str(num), disk])
+        for p_start, p_end, code, label, *_ in plan:
+            run(sg + ["-n", f"0:{p_start}:{p_end}", "-t", f"0:{code}", "-c", f"0:{label}", disk])
+        run(["partx", "-u", disk], check=False)
+        run(["udevadm", "settle"], check=False)
+
+        # Every partition that had to stay must be exactly as before.
+        after = sfdisk_table(disk)
+        now = {u: v for u, v in gpt_snapshot(after).items() if u in keep}
+        if now != keep:
+            raise WriteFailed("Проверка после записи: существующие разделы изменились!")
+        by_start = {p["start"]: p for p in after["partitions"]}
+
+        result = []
+        for p_start, _, code, label, fs, mnt in plan:
+            node = by_start.get(p_start)
+            if not node:
+                raise WriteFailed(f"Не найден созданный раздел {label}.")
+            dev = node["node"]
+            wait_for_node(dev, disk)
+            run(["wipefs", "-a", dev])
+            if fs == "fat32":
+                run(["mkfs.fat", "-F", "32", "-n", "CELESTIA", dev])
+            elif fs == "ext4":
+                run(["mkfs.ext4", "-F", "-q", "-L", "celestia-boot", dev])
+            else:
+                run(["mkfs.btrfs", "-f", "-q", "-L", "celestia", dev])
+            result.append(part_entry(dev, fs, mnt, claimed=True))
+
+        if opt.get("reuse_esp") and opt["kind"] != "disk":
+            result.append(part_entry(opt["reuse_esp"], "fat32", "/boot/efi", claimed=False))
+    except subprocess.CalledProcessError as e:
+        raise WriteFailed(f"Команда завершилась с ошибкой: {' '.join(e.cmd)}\n{e.stderr}")
+
+    return result
+
+
+def wait_for_node(dev, disk, timeout=15):
+    """The kernel may need a moment (or another nudge) to create a new partition node."""
+    for attempt in range(timeout * 2):
+        if os.path.exists(dev):
+            return
+        if attempt % 4 == 3:
+            run(["partx", "-a", disk], check=False)
+            run(["partx", "-u", disk], check=False)
+            run(["udevadm", "settle"], check=False)
+        time.sleep(0.5)
+    raise WriteFailed(f"Раздел {dev} создан, но система его не видит. "
+                      "Перезагрузись с флешки и запусти установку снова: Windows не затронута.")
+
+
+def blkid(dev, tag):
+    return subprocess.run(["blkid", "-s", tag, "-o", "value", dev],
+                          capture_output=True, text=True).stdout.strip()
+
+
+def part_entry(dev, fs, mount_point, claimed):
+    """One element of the Calamares globalstorage "partitions" list."""
+    return {
+        "device": dev,
+        "partlabel": blkid(dev, "PARTLABEL"),
+        "partuuid": blkid(dev, "PARTUUID"),
+        "mountPoint": mount_point,
+        "fsName": fs,
+        "fs": fs,
+        "parttype": "",
+        "partattrs": 0,
+        "features": {},
+        "uuid": blkid(dev, "UUID"),
+        "claimed": claimed,
+    }
+
+
+def main():
+    if os.geteuid() != 0:
+        sys.exit("celestia-disks: run as root")
+    if len(sys.argv) == 2 and sys.argv[1] == "scan":
+        json.dump(scan(), sys.stdout, ensure_ascii=False, indent=1)
+        return
+    if len(sys.argv) == 3 and sys.argv[1] == "apply":
+        try:
+            json.dump({"partitions": apply(sys.argv[2])}, sys.stdout, ensure_ascii=False)
+        except Refused as e:
+            print(str(e), file=sys.stderr)
+            sys.exit(2)
+        except WriteFailed as e:
+            print(str(e), file=sys.stderr)
+            sys.exit(3)
+        return
+    sys.exit(__doc__)
+
+
+if __name__ == "__main__":
+    main()

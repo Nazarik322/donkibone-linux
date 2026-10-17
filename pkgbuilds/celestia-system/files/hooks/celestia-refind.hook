@@ -1,0 +1,10 @@
+[Trigger]
+Operation = Upgrade
+Type = Package
+Target = refind
+Target = celestia-system
+
+[Action]
+Description = Updating the Celestia boot menu (rEFInd)...
+When = PostTransaction
+Exec = /bin/sh -c 'mountpoint -q /boot/efi && [ -f /boot/efi/EFI/refind/refind.conf ] && /usr/bin/celestia-refind || true'

@@ -1,0 +1,40 @@
+#!/usr/bin/env bash
+# Live session, full screen in the cage kiosk compositor (like Windows Setup):
+#   1. celestia-diskpick - where to install (Windows/data partitions are locked)
+#   2. Calamares         - language, user, installation
+# Closing the installer goes back to step 1; after a successful installation
+# the machine reboots.
+
+if [[ "${1:-}" == "--inside-cage" ]]; then
+    keep_env=WAYLAND_DISPLAY,XDG_RUNTIME_DIR,XDG_SESSION_TYPE,QT_QPA_PLATFORM,LANG
+    while true; do
+        sudo --preserve-env="$keep_env" /usr/local/bin/celestia-diskpick || continue
+        sudo --preserve-env="$keep_env" calamares -D6
+        if [[ -e /run/celestia-installed ]]; then
+            exit 0
+        fi
+    done
+fi
+
+# Our installer configuration replaces the CachyOS defaults (which the Calamares
+# package installs into /etc/calamares) in the live system only.
+sudo cp -rf /usr/share/celestia-installer/calamares/. /etc/calamares/
+
+export XDG_SESSION_TYPE=wayland
+export QT_QPA_PLATFORM=wayland
+export XKB_DEFAULT_LAYOUT=us,ru
+export XKB_DEFAULT_OPTIONS=grp:alt_shift_toggle
+# Keep working without a GPU driver (e.g. the "safe graphics" boot entry).
+export WLR_RENDERER_ALLOW_SOFTWARE=1
+if grep -qw 'celestia.safegraphics=1' /proc/cmdline; then
+    export WLR_RENDERER=pixman
+fi
+
+while true; do
+    cage -s -- "$0" --inside-cage
+    if [[ -e /run/celestia-installed ]]; then
+        systemctl reboot
+        exit 0
+    fi
+    sleep 1
+done

@@ -1,0 +1,14 @@
+#!/usr/bin/env bash
+# Host side, after configuring the target: removes installer leftovers and tells
+# the live session (celestia-installer) that it may reboot.
+set -euo pipefail
+root="$1"
+
+if mountpoint -q "$root/var/cache/celestia-offline"; then
+    umount "$root/var/cache/celestia-offline"
+fi
+rmdir "$root/var/cache/celestia-offline" 2>/dev/null || true
+rm -f "$root/var/lib/pacman/sync/celestia-offline.db"
+rm -rf "$root/etc/calamares" "$root/usr/share/celestia-installer"
+
+touch /run/celestia-installed
