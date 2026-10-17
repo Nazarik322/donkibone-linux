@@ -11,6 +11,40 @@ RESOLVED_LIST="$WORK_DIR/packages.resolved"
 OFFLINE_REPO_DIR="$WORK_DIR/offline-repo"
 OFFLINE_REPO_NAME="celestia-offline"
 
+# Update channel of a git branch: main -> stable, beta -> beta, anything else -> dev.
+channel_of_branch() {
+    case "$1" in
+        main|master) echo stable ;;
+        beta)        echo beta ;;
+        *)           echo dev ;;
+    esac
+}
+
+# The channel this build belongs to (config.env, else the current git branch).
+detect_channel() {
+    local ch="$CELESTIA_CHANNEL" branch
+    if [[ -z "$ch" ]]; then
+        branch="$(git -C "$ROOT_DIR" rev-parse --abbrev-ref HEAD 2>/dev/null || true)"
+        ch="$(channel_of_branch "${GITHUB_REF_NAME:-${branch:-main}}")"
+    fi
+    case "$ch" in stable|beta|dev) echo "$ch" ;; *) die "unknown channel '$ch' (stable|beta|dev)" ;; esac
+}
+
+# Monotonic package version of our own packages: 1.<number of commits>.
+celestia_pkgver() {
+    echo "1.$(git -C "$ROOT_DIR" rev-list --count HEAD 2>/dev/null || echo 0)"
+}
+
+# pacman repository section for a channel (Include file of the installed system).
+render_channel_conf() {  # <channel>
+    cat <<CONF
+# Celestia update channel: $1  (change with: sudo celestia-channel stable|beta|dev)
+[celestia-$1]
+SigLevel = Required DatabaseOptional
+Server = https://github.com/$CELESTIA_REPO/releases/download/repo-$1
+CONF
+}
+
 msg()  { printf '\033[1;35m==>\033[0m \033[1m%s\033[0m\n' "$*"; }
 msg2() { printf '\033[1;34m  ->\033[0m %s\n' "$*"; }
 warn() { printf '\033[1;33m==> WARNING:\033[0m %s\n' "$*" >&2; }

@@ -8,6 +8,10 @@ marker="$state_dir/celestia/firstboot-done"
 
 xdg-user-dirs-update
 
+# Dots in the home folder start out identical to the package: remember them as
+# "untouched" so later updates (celestia-dots-sync) can replace them.
+celestia-dots-sync --baseline
+
 # Colour scheme and wallpaper (manifest.toml post_install)
 if [[ ! -f "$state_dir/caelestia/scheme.json" ]]; then
     caelestia scheme set -n caelestia

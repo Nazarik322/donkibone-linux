@@ -1,23 +1,46 @@
 #!/usr/bin/env bash
-# Full system update that keeps caelestia working.
-#   1. CachyOS/Arch packages (kernel, drivers, Qt, Hyprland) through pacman.
-#   2. AUR packages (caelestia, quickshell, fonts) through paru.
-#   3. If Qt or Hyprland changed, rebuilds the compiled caelestia pieces against
-#      the new versions - a stale quickshell is the usual cause of a black screen.
-set -euo pipefail
+# Full system update that keeps the caelestia desktop working.
+#   1. system + Celestia packages through pacman (our packages come from your update
+#      channel, see celestia-channel);
+#   2. if CachyOS moved to a new Qt before the shell was rebuilt for it, nothing is
+#      updated and you are told to wait (a rebuild usually appears within an hour);
+#   3. packages you installed yourself from the AUR;
+#   4. your caelestia config files (never overwriting your changes).
+set -uo pipefail
 
-watched=(qt6-base qt6-declarative qt6-wayland hyprland)
-rebuild=(qt6-m3shapes-git quickshell-git caelestia-shell)
+PACMAN="${PACMAN:-pacman}"
 
-before="$(pacman -Q "${watched[@]}" 2>/dev/null || true)"
+echo ":: Обновление баз пакетов..."
+sudo "$PACMAN" -Sy || exit 1
 
-sudo pacman -Syu
-paru -Sua
+# The shell is built against one exact Qt (its packages depend on it), so while it is
+# behind, pacman cannot satisfy the transaction. Look at what pacman itself says.
+plan="$(sudo env LC_ALL=C "$PACMAN" -Su --print --print-format '%n' 2>&1)"
+status=$?
+if (( status != 0 )); then
+    if grep -qE "breaks dependency '(qt6-[a-z]+)=" <<< "$plan"; then
+        cat <<'MSG'
 
-after="$(pacman -Q "${watched[@]}" 2>/dev/null || true)"
-
-if [[ "$before" != "$after" ]]; then
-    echo ":: Qt or Hyprland was updated, rebuilding caelestia components..."
-    paru -S --rebuild --noconfirm "${rebuild[@]}"
-    echo ":: Done. Restart the shell with: caelestia shell -r"
+:: CachyOS выпустил новую версию Qt, а оболочка Celestia под неё ещё пересобирается
+   (обычно это занимает меньше часа). Система не обновлена — рабочий стол продолжит
+   работать как раньше. Повтори `celestia-update` позже.
+   До тех пор не ставь новые пакеты через `pacman -S` (базы уже синхронизированы).
+MSG
+        exit 0
+    fi
+    echo "$plan" >&2
+    echo ":: Обновление невозможно, причина выше." >&2
+    exit 1
 fi
+
+sudo "$PACMAN" -Su || exit 1
+
+# Only things installed by hand from the AUR are "foreign" now: our own packages
+# come from the Celestia repository.
+if command -v paru >/dev/null && [[ -n "$("$PACMAN" -Qmq 2>/dev/null)" ]]; then
+    echo ":: Обновление пакетов из AUR..."
+    paru -Sua
+fi
+
+command -v celestia-dots-sync >/dev/null && celestia-dots-sync
+echo ":: Готово. Если обновилось ядро или драйверы — перезагрузись."

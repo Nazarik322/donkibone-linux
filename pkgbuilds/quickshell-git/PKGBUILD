@@ -61,7 +61,20 @@ build() {
   cmake --build build
 }
 
+# celestia:qt-pinned
+# Pin the Qt this package was built against (compiled QML/C++ is tied to it): pacman
+# then refuses a Qt update until the package is rebuilt for the new version, and
+# celestia-update explains the wait. Rebuilds are done automatically by CI.
+_pin_qt() {
+    local _p _v
+    for _p in qt6-base qt6-declarative; do
+        _v="$(pacman -Q "$_p" | cut -d' ' -f2)"
+        depends+=("$_p=${_v%-*}")
+    done
+}
+
 package() {
+    _pin_qt
   install -Dm644 "quickshell-check.hook" -t "$pkgdir/usr/share/libalpm/hooks"
   cd "$_pkgname"
   DESTDIR="$pkgdir" cmake --install build

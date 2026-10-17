@@ -29,6 +29,9 @@ esac
 EOF
     printf '#!/usr/bin/env bash\necho terminate >> "%s/log"\n' "$T" > "$T/bin/loginctl"
     printf '#!/usr/bin/env bash\necho firstboot >> "%s/log"\n' "$T" > "$T/bin/firstboot"
+    printf '#!/usr/bin/env bash
+echo dots-sync >> "%s/log"
+' "$T" > "$T/bin/celestia-dots-sync"
     chmod +x "$T/bin/"*
     sed -e "s|/usr/lib/celestia/firstboot|$T/bin/firstboot|g" -e 's/seq 300/seq 30/' "$SRC" > "$T/ss"
     date +%s%N > "$T/start"
@@ -46,7 +49,7 @@ EOF
     rm -rf "$T"
 }
 
-QS_READY_AFTER=1 QS_CAN_LOCK=1 HYPRLOCK=run run_case "shell up: hyprlock first, handed over to caelestia" "hyprlock" "QS_LOCK_CALL" "firstboot" "!terminate"
+QS_READY_AFTER=1 QS_CAN_LOCK=1 HYPRLOCK=run run_case "shell up: hyprlock first, handed over to caelestia" "hyprlock" "QS_LOCK_CALL" "firstboot" "dots-sync" "!terminate"
 QS_READY_AFTER=never QS_CAN_LOCK=1 HYPRLOCK=run run_case "no shell: hyprlock stays, session not ended" "hyprlock" "firstboot" "!QS_LOCK_CALL" "!terminate"
 QS_READY_AFTER=1 QS_CAN_LOCK=1 HYPRLOCK=fail run_case "hyprlock broken: caelestia locks" "QS_LOCK_CALL" "!terminate"
 QS_READY_AFTER=never QS_CAN_LOCK=1 HYPRLOCK=fail run_case "nothing works: session ended (fail closed)" "terminate"

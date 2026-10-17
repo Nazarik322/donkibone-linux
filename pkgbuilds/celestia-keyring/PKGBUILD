@@ -1,0 +1,20 @@
+# Keyring of the Celestia package repositories (public key only; the private key
+# is a GitHub Actions secret). Same layout as archlinux-keyring.
+
+pkgname='celestia-keyring'
+pkgver=20261017
+pkgrel=1
+pkgdesc='Celestia package signing keyring'
+arch=('any')
+url='https://github.com/Nazarik322/donkibone-linux'
+license=('GPL-3.0-only')
+depends=('pacman')
+install=celestia-keyring.install
+source=('celestia.gpg' 'celestia-trusted' 'celestia-revoked')
+sha256sums=('SKIP' 'SKIP' 'SKIP')
+
+package() {
+    install -Dm644 celestia.gpg      "$pkgdir/usr/share/pacman/keyrings/celestia.gpg"
+    install -Dm644 celestia-trusted  "$pkgdir/usr/share/pacman/keyrings/celestia-trusted"
+    install -Dm644 celestia-revoked  "$pkgdir/usr/share/pacman/keyrings/celestia-revoked"
+}

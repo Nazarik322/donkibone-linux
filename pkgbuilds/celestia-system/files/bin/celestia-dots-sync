@@ -1,0 +1,94 @@
+#!/usr/bin/env bash
+# Brings the caelestia dots in your home folder up to date with the installed
+# celestia-system package, without ever overwriting your own changes.
+#
+#   celestia-dots-sync            sync (run at login and by celestia-update)
+#   celestia-dots-sync --baseline remember the current files as "untouched" (first login)
+#
+# For every file the package ships under /usr/share/celestia/dots:
+#   - missing in your home        -> installed (unless you deleted it on purpose)
+#   - identical to the package    -> nothing to do
+#   - same as the version this tool installed last time (you did not change it)
+#                                 -> replaced by the new version
+#   - changed by you              -> kept; the new version is written next to it as
+#                                    FILE.celestia-new and listed in dots-conflicts.txt
+# Your own files (hypr-user.lua, hypr-vars.lua, user-config.fish, shell.json, ...)
+# are not part of the package tree and are never touched.
+set -uo pipefail
+
+SRC="${CELESTIA_DOTS_SRC:-/usr/share/celestia/dots}"
+STATE="${XDG_STATE_HOME:-$HOME/.local/state}/celestia"
+MANIFEST="$STATE/dots.manifest"
+CONFLICTS="$STATE/dots-conflicts.txt"
+
+mode=sync
+case "${1:-}" in
+    --baseline) mode=baseline ;;
+    "") ;;
+    *) echo "usage: celestia-dots-sync [--baseline]" >&2; exit 2 ;;
+esac
+
+[[ -d "$SRC" ]] || { echo "celestia-dots-sync: $SRC not found" >&2; exit 0; }
+mkdir -p "$STATE"
+touch "$MANIFEST"
+
+hash_of() { sha256sum "$1" | cut -d' ' -f1; }
+
+declare -A recorded
+while read -r h path; do
+    [[ -n "$path" ]] && recorded["$path"]="$h"
+done < "$MANIFEST"
+
+updated=0 installed=0 conflicts=()
+
+while IFS= read -r -d '' file; do
+    rel="${file#"$SRC"/}"
+    dest="$HOME/$rel"
+    new="$(hash_of "$file")"
+    old="${recorded[$rel]:-}"
+
+    if [[ ! -e "$dest" ]]; then
+        if [[ "$mode" == sync && -z "$old" ]]; then
+            install -Dm644 "$file" "$dest" && recorded["$rel"]="$new" && installed=$((installed + 1))
+        fi
+        # a file that was recorded but is gone: the user deleted it, respect that
+        continue
+    fi
+
+    cur="$(hash_of "$dest")"
+    if [[ "$cur" == "$new" ]]; then
+        recorded["$rel"]="$new"
+        rm -f "$dest.celestia-new"
+    elif [[ "$mode" == baseline ]]; then
+        :   # differs from the package: do not claim it as untouched
+    elif [[ -n "$old" && "$cur" == "$old" ]]; then
+        if cp -f "$file" "$dest"; then
+            recorded["$rel"]="$new"
+            updated=$((updated + 1))
+        fi
+    else
+        # modified by the user (or origin unknown): keep, offer the new version
+        if [[ ! -e "$dest.celestia-new" ]] || [[ "$(hash_of "$dest.celestia-new")" != "$new" ]]; then
+            cp -f "$file" "$dest.celestia-new"
+            conflicts+=("$dest")
+        fi
+    fi
+done < <(find "$SRC" -type f -print0 | sort -z)
+
+# Write the manifest back
+: > "$MANIFEST"
+for path in "${!recorded[@]}"; do
+    printf '%s  %s\n' "${recorded[$path]}" "$path"
+done | sort -k2 >> "$MANIFEST"
+
+if (( ${#conflicts[@]} )); then
+    {
+        echo "# New versions of files you changed. Compare, merge, then delete the .celestia-new file."
+        printf '%s\n' "${conflicts[@]}"
+    } > "$CONFLICTS"
+    msg="Celestia: ${#conflicts[@]} config file(s) you changed have a newer version (FILE.celestia-new). See $CONFLICTS"
+    echo "$msg"
+    command -v notify-send >/dev/null && notify-send -a Celestia "Настройки обновились" "$msg" 2>/dev/null
+fi
+(( updated + installed )) && echo "celestia-dots-sync: $updated updated, $installed installed"
+exit 0

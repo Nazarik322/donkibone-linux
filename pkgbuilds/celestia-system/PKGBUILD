@@ -2,13 +2,15 @@
 # files/generated/ is produced by scripts/make-theme.sh before this package is built.
 
 pkgname='celestia-system'
-pkgver=1.0.0
+# build-packages.sh sets pkgver to 1.<number of git commits>; the value here is a placeholder.
+pkgver=1.0
 pkgrel=1
 pkgdesc='Celestia defaults: caelestia dots for new users, autologin into the lock screen, rEFInd theme'
 arch=('any')
 url='https://github.com/caelestia-dots/caelestia'
 license=('GPL-3.0-only')
 depends=(
+  'celestia-keyring'
   'caelestia-shell'
   'caelestia-cli'
   'hyprland'
@@ -34,14 +36,20 @@ package() {
 
   [[ -d "$files/generated" ]] || { error "Run scripts/make-theme.sh first"; return 1; }
 
-  # caelestia dots: default components of manifest.toml, copied for every new user
-  local entry
-  for entry in hypr fish foot fastfetch btop micro uwsm; do
-    install -d "$skel/.config"
-    cp -r "$dots/$entry" "$skel/.config/$entry"
+  # caelestia dots: default components of manifest.toml. Two copies: /etc/skel for new
+  # users, and /usr/share/celestia/dots, the reference celestia-dots-sync updates from.
+  # (User-owned files such as hypr-user.lua are only in skel and never synced.)
+  local entry root
+  for root in "$skel" "$pkgdir/usr/share/celestia/dots"; do
+    for entry in hypr fish foot fastfetch btop micro uwsm; do
+      install -d "$root/.config"
+      cp -r "$dots/$entry" "$root/.config/$entry"
+    done
+    cp -r "$dots/thunar" "$root/.config/Thunar"
+    install -Dm644 "$dots/starship.toml" "$root/.config/starship.toml"
   done
-  cp -r "$dots/thunar" "$skel/.config/Thunar"
-  install -Dm644 "$dots/starship.toml" "$skel/.config/starship.toml"
+  # Generated at runtime by the shell/CLI, never managed
+  rm -f "$pkgdir/usr/share/celestia/dots/.config/hypr/scheme/current.lua"
 
   # Celestia user defaults (hypr-user.lua locks the session at start)
   cp -r "$files/skel/." "$skel/"
@@ -58,8 +66,9 @@ package() {
   install -Dm755 "$files/lib/firstboot"     "$pkgdir/usr/lib/celestia/firstboot"
   install -Dm755 "$files/bin/celestia-refind" "$pkgdir/usr/bin/celestia-refind"
   install -Dm755 "$files/bin/celestia-update" "$pkgdir/usr/bin/celestia-update"
+  install -Dm755 "$files/bin/celestia-channel" "$pkgdir/usr/bin/celestia-channel"
+  install -Dm755 "$files/bin/celestia-dots-sync" "$pkgdir/usr/bin/celestia-dots-sync"
   install -Dm644 "$files/hooks/celestia-refind.hook" "$pkgdir/usr/share/libalpm/hooks/celestia-refind.hook"
-  install -Dm644 "$files/hooks/celestia-qt-update.hook" "$pkgdir/usr/share/libalpm/hooks/celestia-qt-update.hook"
   install -Dm644 "$files/hyprlock/hyprlock.conf" "$pkgdir/usr/share/celestia/hyprlock.conf"
 
   # greetd template, filled in by the installer

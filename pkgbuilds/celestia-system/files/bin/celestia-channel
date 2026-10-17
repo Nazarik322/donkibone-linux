@@ -1,0 +1,70 @@
+#!/usr/bin/env bash
+# Shows or switches the update channel of this system.
+#
+#   celestia-channel               show the current channel
+#   sudo celestia-channel NAME     switch to stable | beta | dev
+#   sudo celestia-channel NAME -y  ... without asking
+#
+#   stable  tested releases (default)        beta  features being tried out
+#   dev     latest development builds, may be broken
+#
+# Switching to an older channel (e.g. dev -> stable) downgrades our packages to that
+# channel's versions; a btrfs snapshot is taken first by snap-pac.
+set -uo pipefail
+
+ROOT="${CELESTIA_ROOT:-}"
+CONF="$ROOT/etc/pacman.d/celestia.conf"
+CHANNEL_FILE="$ROOT/etc/celestia/channel"
+REPO_FILE="$ROOT/etc/celestia/repo"
+
+current() { cat "$CHANNEL_FILE" 2>/dev/null || echo stable; }
+
+if [[ $# -eq 0 ]]; then
+    echo "Канал обновлений: $(current)"
+    echo "Сменить: sudo celestia-channel stable|beta|dev"
+    exit 0
+fi
+
+new="$1"
+assume_yes=false
+[[ "${2:-}" == "-y" || "${2:-}" == "--yes" ]] && assume_yes=true
+case "$new" in
+    stable|beta|dev) ;;
+    *) echo "celestia-channel: неизвестный канал '$new' (stable | beta | dev)" >&2; exit 2 ;;
+esac
+[[ $EUID -eq 0 || -n "$ROOT" ]] || { echo "celestia-channel: нужны права root: sudo celestia-channel $new" >&2; exit 1; }
+
+if [[ "$new" == "$(current)" ]]; then
+    echo "Уже используется канал $new."
+    exit 0
+fi
+
+if [[ "$new" != stable ]] && ! $assume_yes; then
+    echo "Канал $new: обновления выходят раньше проверки, система может работать нестабильно."
+    read -r -p "Переключиться на $new? [y/N] " answer
+    [[ "$answer" =~ ^[yYдД] ]] || { echo "Отменено."; exit 1; }
+fi
+
+repo="$(cat "$REPO_FILE" 2>/dev/null || echo Nazarik322/donkibone-linux)"
+mkdir -p "$(dirname "$CONF")" "$(dirname "$CHANNEL_FILE")"
+old="$(current)"
+cp -f "$CONF" "$CONF.bak" 2>/dev/null
+
+cat > "$CONF" <<CONFEOF
+# Celestia update channel: $new  (change with: sudo celestia-channel stable|beta|dev)
+[celestia-$new]
+SigLevel = Required DatabaseOptional
+Server = https://github.com/$repo/releases/download/repo-$new
+CONFEOF
+echo "$new" > "$CHANNEL_FILE"
+
+echo "Канал: $old -> $new. Синхронизация пакетов..."
+# -uu also downgrades packages to the versions of the new channel.
+if ! pacman -Syuu; then
+    echo "celestia-channel: обновление не удалось, возвращаю канал $old" >&2
+    mv -f "$CONF.bak" "$CONF" 2>/dev/null
+    echo "$old" > "$CHANNEL_FILE"
+    exit 1
+fi
+rm -f "$CONF.bak"
+echo "Готово. Рекомендуется перезагрузка."
