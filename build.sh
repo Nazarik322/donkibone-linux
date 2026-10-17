@@ -3,6 +3,7 @@
 # user, after scripts/setup-build-env.sh. The ISO lands in ./out/.
 #
 #   ./build.sh            full build (theme -> packages -> offline repo -> ISO)
+#   CELESTIA_RESTORE=1 ./build.sh   start from the packages of the published channel
 #   ./build.sh --clean    also rebuild every package from scratch (drops the build
 #                         chroot, build stamps and the local package repo)
 set -euo pipefail
@@ -48,6 +49,12 @@ msg "1/5 Theme"
 "$ROOT_DIR/scripts/make-theme.sh"
 
 msg "2/5 Packages"
+if [[ -n "${CELESTIA_RESTORE:-}" ]]; then
+    # Take the packages the update channel already publishes (exactly what installed
+    # systems will get); only what is missing or changed is built.
+    LOCAL_REPO_NAME="celestia-$(detect_channel)" "$ROOT_DIR/scripts/repo-release.sh" restore
+    export LOCAL_REPO_NAME="celestia-$(detect_channel)"
+fi
 "$ROOT_DIR/scripts/build-packages.sh"
 
 msg "3/5 Offline driver repo"
@@ -64,6 +71,14 @@ cp "$BUILD_PACMAN_CONF" "$profile_dir/pacman.conf"
 
 airootfs="$profile_dir/airootfs"
 apply_march "$airootfs/etc/pacman.conf"
+
+# Update channel of the installed system: where `pacman -Syu` finds Celestia packages.
+channel="$(detect_channel)"
+msg2 "update channel of this ISO: $channel"
+install -d "$airootfs/etc/celestia"
+echo "$channel" > "$airootfs/etc/celestia/channel"
+echo "$CELESTIA_REPO" > "$airootfs/etc/celestia/repo"
+render_channel_conf "$channel" > "$airootfs/etc/pacman.d/celestia.conf"
 # Not /etc/calamares: the Calamares package owns files there. celestia-installer
 # copies this over /etc/calamares when the live system starts.
 install -d "$airootfs/usr/share/celestia-installer"

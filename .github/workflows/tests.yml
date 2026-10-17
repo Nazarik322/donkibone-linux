@@ -1,0 +1,17 @@
+name: tests
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  tests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Offline checks (syntax, disk safety, lock screen, updates, channels)
+        env:
+          PYTHON: python3
+        run: bash tests/run-all.sh

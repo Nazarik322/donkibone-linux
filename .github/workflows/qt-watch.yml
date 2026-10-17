@@ -1,0 +1,60 @@
+name: qt-watch
+
+# CachyOS updates Qt on its own schedule. The shell is built against one exact Qt
+# (see _pin_qt in the PKGBUILDs), so when Qt moves, the packages of every channel must
+# be rebuilt. This job notices the move and starts the rebuilds; until they are
+# published, installed systems keep working (celestia-update tells them to wait).
+
+on:
+  schedule:
+    - cron: '17 * * * *'
+  workflow_dispatch:
+
+permissions:
+  actions: write
+  contents: read
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    container:
+      image: archlinux:latest
+    env:
+      GH_TOKEN: ${{ github.token }}
+      CI: "true"
+    steps:
+      - name: Base packages
+        run: |
+          pacman -Syu --noconfirm --needed base-devel git github-cli jq curl sudo
+          useradd -m builder
+          echo 'builder ALL=(ALL) NOPASSWD: ALL' > /etc/sudoers.d/builder
+
+      - uses: actions/checkout@v4
+
+      - name: Qt version in the CachyOS repositories
+        id: qt
+        run: |
+          chown -R builder:builder "$GITHUB_WORKSPACE"
+          SUDO_USER=builder ./scripts/setup-build-env.sh
+          sudo -u builder env WORK_DIR=/home/builder/celestia-work bash -euo pipefail -c '
+            git config --global --add safe.directory "*"
+            source scripts/common.sh
+            render_pacman_conf
+            sync_private_db
+            qt_salt
+          ' > qt-now.txt
+          echo "now: $(cat qt-now.txt)"
+
+      - name: Rebuild channels whose packages were built against another Qt
+        run: |
+          now="$(cat qt-now.txt)"
+          [ -n "$now" ] || { echo "::error::could not read the Qt version"; exit 1; }
+          for pair in stable:main beta:beta dev:dev; do
+            channel="${pair%%:*}"; branch="${pair##*:}"
+            built="$(curl -fsSL "https://github.com/${GITHUB_REPOSITORY}/releases/download/repo-${channel}/qt-version.txt" 2>/dev/null || true)"
+            echo "$channel: built against '$built'"
+            if [ "$built" != "$now" ]; then
+              echo "-> rebuilding $channel"
+              gh workflow run packages.yml --ref "$branch" -R "$GITHUB_REPOSITORY" || true
+            fi
+          done

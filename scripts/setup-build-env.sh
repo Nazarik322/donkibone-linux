@@ -19,7 +19,12 @@ if ! grep -q '^\[cachyos\]' /etc/pacman.conf; then
     tmp="$(mktemp -d)"
     curl -fsSL https://mirror.cachyos.org/cachyos-repo.tar.xz -o "$tmp/cachyos-repo.tar.xz"
     tar -xf "$tmp/cachyos-repo.tar.xz" -C "$tmp"
-    (cd "$tmp/cachyos-repo" && ./cachyos-repo.sh)
+    if [[ -n "${CI:-}" ]]; then
+        # CI has no terminal: answer the script's confirmation questions with "yes"
+        (cd "$tmp/cachyos-repo" && yes | ./cachyos-repo.sh)
+    else
+        (cd "$tmp/cachyos-repo" && ./cachyos-repo.sh)
+    fi
     rm -rf "$tmp"
 else
     msg2 "CachyOS repositories already configured"

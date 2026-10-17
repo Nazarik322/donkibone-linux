@@ -29,7 +29,7 @@ done
 # ------------------------------------------------------------ pacman keyring
 log "initializing the pacman keyring"
 pacman-key --init
-pacman-key --populate archlinux cachyos
+pacman-key --populate archlinux cachyos celestia
 
 # ------------------------------------------------------------ kernel preset
 log "restoring the normal mkinitcpio preset"

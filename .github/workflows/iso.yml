@@ -1,0 +1,53 @@
+name: iso
+
+# Builds the installer ISO of a branch from the packages its channel publishes.
+# Run it by hand (Actions -> iso -> Run workflow, pick the branch). The ISO is attached
+# to the run as an artifact for 7 days; download it, then write it to a USB stick.
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  iso:
+    runs-on: ubuntu-latest
+    timeout-minutes: 300
+    container:
+      image: archlinux:latest
+      options: --privileged   # mkarchiso mounts file systems
+    env:
+      GH_TOKEN: ${{ github.token }}
+      CI: "true"
+    steps:
+      - name: Base packages
+        run: |
+          pacman -Syu --noconfirm --needed base-devel git github-cli jq curl sudo libarchive
+          useradd -m builder
+          echo 'builder ALL=(ALL) NOPASSWD: ALL' > /etc/sudoers.d/builder
+
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Build environment
+        run: |
+          chown -R builder:builder "$GITHUB_WORKSPACE"
+          SUDO_USER=builder ./scripts/setup-build-env.sh
+
+      - name: Build the ISO
+        run: |
+          sudo -E -u builder env WORK_DIR=/home/builder/celestia-work BUILD_MODE=container \
+            CELESTIA_RESTORE=1 GH_TOKEN="$GH_TOKEN" \
+            bash -euo pipefail -c '
+              git config --global --add safe.directory "*"
+              ./build.sh
+            '
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: celestia-iso-${{ github.ref_name }}
+          path: out/*
+          retention-days: 7
+          compression-level: 0

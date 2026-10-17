@@ -53,7 +53,7 @@ cp -f "$CONF" "$CONF.bak" 2>/dev/null
 cat > "$CONF" <<CONFEOF
 # Celestia update channel: $new  (change with: sudo celestia-channel stable|beta|dev)
 [celestia-$new]
-SigLevel = Required DatabaseOptional
+SigLevel = Required
 Server = https://github.com/$repo/releases/download/repo-$new
 CONFEOF
 echo "$new" > "$CHANNEL_FILE"

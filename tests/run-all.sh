@@ -26,6 +26,20 @@ if command -v shellcheck >/dev/null; then
     shellcheck -S error "${shell_scripts[@]}" || fail=1
 fi
 
+step "line endings (CR would break passwd, sudoers, scripts)"
+"$PYTHON" -c "
+import os, sys
+bad = []
+for root, dirs, files in os.walk('.'):
+    dirs[:] = [d for d in dirs if d not in ('.git', '.claude')]
+    for f in files:
+        p = os.path.join(root, f)
+        b = open(p, 'rb').read()
+        if b'\r' in b and b'\0' not in b:
+            bad.append(p)
+print('CRLF in:', *bad) if bad else print('ok')
+sys.exit(1 if bad else 0)" || fail=1
+
 step "python syntax"
 "$PYTHON" -c "import ast, sys
 for p in sys.argv[1:]: ast.parse(open(p, encoding='utf-8').read(), p)
@@ -43,6 +57,21 @@ bash tests/test_session_start.sh || fail=1
 
 step "celestia-refind (UEFI boot entry)"
 bash tests/test_celestia_refind_nvram.sh || fail=1
+
+step "celestia-update / celestia-channel"
+bash tests/test_celestia_update.sh || fail=1
+
+step "celestia-dots-sync (config updates)"
+bash tests/test_celestia_dots_sync.sh || fail=1
+
+step "update channels"
+bash tests/test_channels.sh || fail=1
+
+step "build-packages (rebuild keys, versions)"
+bash tests/test_build_packages.sh || fail=1
+
+step "repo-release (asset clean-up)"
+bash tests/test_repo_release.sh || fail=1
 
 echo
 if (( fail )); then echo "SOME CHECKS FAILED"; else echo "ALL CHECKS PASSED"; fi

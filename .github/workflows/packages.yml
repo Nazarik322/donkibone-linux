@@ -1,0 +1,73 @@
+name: packages
+
+# Builds the Celestia packages of a branch and publishes them as the signed pacman
+# repository of its update channel (main -> stable, beta -> beta, dev -> dev).
+# Unchanged packages are reused from the previous release, so most runs are short.
+
+on:
+  push:
+    branches: [main, beta, dev]
+    paths-ignore:
+      - '**.md'
+      - 'tests/**'
+      - '.github/workflows/tests.yml'
+  workflow_dispatch:
+
+# One run per branch at a time (they share one release); a newer push waits, not cancels,
+# so a half-published repository is never cut off.
+concurrency:
+  group: packages-${{ github.ref_name }}
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 300
+    container:
+      image: archlinux:latest
+    env:
+      GH_TOKEN: ${{ github.token }}
+      CI: "true"
+    steps:
+      - name: Base packages
+        run: |
+          pacman -Syu --noconfirm --needed base-devel git github-cli jq curl sudo libarchive
+          useradd -m builder
+          echo 'builder ALL=(ALL) NOPASSWD: ALL' > /etc/sudoers.d/builder
+
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0   # the package version is the number of commits
+
+      - name: Build environment (CachyOS repositories, tools)
+        run: |
+          chown -R builder:builder "$GITHUB_WORKSPACE"
+          SUDO_USER=builder ./scripts/setup-build-env.sh
+
+      - name: Build and publish
+        env:
+          CELESTIA_SIGNING_KEY: ${{ secrets.CELESTIA_SIGNING_KEY }}
+        run: |
+          case "$GITHUB_REF_NAME" in
+            main) channel=stable ;;
+            beta) channel=beta ;;
+            *)    channel=dev ;;
+          esac
+          [ -n "$CELESTIA_SIGNING_KEY" ] || { echo "::error::secret CELESTIA_SIGNING_KEY is not set"; exit 1; }
+          sudo -E -u builder env \
+            CELESTIA_CHANNEL="$channel" LOCAL_REPO_NAME="celestia-$channel" \
+            WORK_DIR=/home/builder/celestia-work BUILD_MODE=container PUBLISH_ONLY_IF_BUILT=1 \
+            CELESTIA_SIGNING_KEY="$CELESTIA_SIGNING_KEY" GH_TOKEN="$GH_TOKEN" \
+            bash -euo pipefail -c '
+              git config --global --add safe.directory "*"
+              printf "%s\n" "$CELESTIA_SIGNING_KEY" | gpg --batch --import
+              export CELESTIA_SIGNING_KEY_ID="$(cat keys/FINGERPRINT)"
+              gpg --list-secret-keys "$CELESTIA_SIGNING_KEY_ID" >/dev/null
+              ./scripts/make-theme.sh
+              ./scripts/repo-release.sh restore
+              ./scripts/build-packages.sh
+              ./scripts/repo-release.sh publish
+            '

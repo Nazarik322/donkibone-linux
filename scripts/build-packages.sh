@@ -11,7 +11,7 @@
 # Qt version for Qt-dependent packages), so with the previously published repository
 # restored (scripts/repo-release.sh restore) unchanged packages keep their files.
 set -euo pipefail
-source "$(dirname "$0")/common.sh"
+source "$(dirname "${BASH_SOURCE[0]}")/common.sh"
 
 [[ $EUID -ne 0 ]] || die "run as your normal user (sudo is used where needed)"
 
@@ -27,7 +27,7 @@ STAMP_DIR="$WORK_DIR/stamps"
 BUILD_MODE="${BUILD_MODE:-chroot}"   # chroot | container
 
 declare -A LOCAL_PKG      # package name / provides -> pinned PKGBUILD dir
-declare -A DONE           # dependency name -> 1 once satisfied
+declare -A SATISFIED           # dependency name -> 1 once satisfied
 declare -A BUILT          # PKGBUILD dir -> 1 once built
 declare -A VISITING       # PKGBUILD dir -> 1 while resolving (cycle detection)
 AUR_BUILT=()
@@ -111,12 +111,6 @@ ensure_chroot() {
 dir_hash() { (cd "$1" && find . -type f ! -path './src/*' ! -path './pkg/*' ! -path './files/generated/*' \
     ! -name '*.pkg.tar.*' -print0 | sort -z | xargs -0 sha256sum | sha256sum | cut -d' ' -f1); }
 
-# Versions of the Qt packages the shell is built against, from the build repositories.
-qt_salt() {
-    LC_ALL=C pacman --config "$BUILD_PACMAN_CONF" --dbpath "$PRIVATE_DB" -Si qt6-base qt6-declarative 2>/dev/null \
-        | sed -n 's/^Version *: //p' | tr '\n' ' '
-}
-
 # What decides whether a package must be rebuilt.
 build_key() {  # <dir> <srcinfo>
     local dir="$1" info="$2" key
@@ -189,9 +183,13 @@ build_dir() {
         (( ${#pkgs[@]} )) || die "${dir##*/} produced no packages"
         cp "${pkgs[@]}" "$LOCAL_REPO_DIR/" || die "cannot copy ${dir##*/} packages to $LOCAL_REPO_DIR"
         local added=()
-        for p in "${pkgs[@]}"; do added+=("$LOCAL_REPO_DIR/${p##*/}"); done
+        for p in "${pkgs[@]}"; do
+            added+=("$LOCAL_REPO_DIR/${p##*/}")
+            rm -f "$LOCAL_REPO_DIR/${p##*/}.sig"   # a rebuilt file needs a fresh signature
+        done
         repo-add -q -R "$LOCAL_REPO_DIR/$LOCAL_REPO_NAME.db.tar.gz" "${added[@]}" || die "repo-add failed for ${dir##*/}"
         sync_private_db || die "cannot refresh the package databases"
+        touch "$WORK_DIR/.built-something"
         [[ "$BUILD_MODE" == container ]] && { sudo pacman -Sy --noconfirm >/dev/null || die "cannot refresh pacman"; }
         mkdir -p "$STAMP_DIR"
         echo "$hash" > "$stamp" || die "cannot write $stamp"
@@ -205,7 +203,7 @@ build_dir() {
 # Makes sure a dependency is available in the build repos; builds it if needed.
 ensure() {
     local dep="$1" dir
-    [[ -n "${DONE[$dep]:-}" ]] && return 0
+    [[ -n "${SATISFIED[$dep]:-}" ]] && return 0
     if [[ -n "${LOCAL_PKG[$dep]:-}" ]]; then
         build_dir "${LOCAL_PKG[$dep]}"
     elif in_repos "$dep"; then
@@ -215,7 +213,7 @@ ensure() {
     else
         return 1
     fi
-    DONE[$dep]=1
+    SATISFIED[$dep]=1
 }
 
 main() {
@@ -226,6 +224,8 @@ main() {
     touch "$AUR_LOCK_OUT"
     index_local_pkgbuilds
     container_init
+    rm -f "$WORK_DIR/.built-something"
+    qt_salt > "$WORK_DIR/qt-version.txt"
 
     local spec optional alts chosen a resolved=()
     while read -r spec; do
@@ -259,4 +259,4 @@ main() {
     msg "Package list ready: $RESOLVED_LIST (${#resolved[@]} packages)"
 }
 
-main "$@"
+if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then main "$@"; fi

@@ -162,5 +162,6 @@ xdg-utils
 greetd
 greetd-tuigreet
 
-# Our configs, theme, scripts
+# Our configs, theme, scripts, and the key that signs our updates
+celestia-keyring
 celestia-system

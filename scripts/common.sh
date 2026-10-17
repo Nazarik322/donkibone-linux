@@ -30,6 +30,12 @@ detect_channel() {
     case "$ch" in stable|beta|dev) echo "$ch" ;; *) die "unknown channel '$ch' (stable|beta|dev)" ;; esac
 }
 
+# Versions of the Qt packages the shell is built against, from the build repositories.
+qt_salt() {
+    LC_ALL=C pacman --config "$BUILD_PACMAN_CONF" --dbpath "$PRIVATE_DB" -Si qt6-base qt6-declarative 2>/dev/null \
+        | sed -n 's/^Version *: //p' | tr '\n' ' '
+}
+
 # Monotonic package version of our own packages: 1.<number of commits>.
 celestia_pkgver() {
     echo "1.$(git -C "$ROOT_DIR" rev-list --count HEAD 2>/dev/null || echo 0)"
@@ -40,7 +46,7 @@ render_channel_conf() {  # <channel>
     cat <<CONF
 # Celestia update channel: $1  (change with: sudo celestia-channel stable|beta|dev)
 [celestia-$1]
-SigLevel = Required DatabaseOptional
+SigLevel = Required
 Server = https://github.com/$CELESTIA_REPO/releases/download/repo-$1
 CONF
 }
