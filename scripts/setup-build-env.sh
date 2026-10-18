@@ -15,10 +15,15 @@ msg "Updating the system"
 pacman -Syu --noconfirm --needed base-devel git curl
 
 # Containers cannot give pacman's hooks a private network ("could not isolate the
-# network"): turn the sandbox off, as CachyOS's own ISO build does.
-if ! grep -q '^DisableSandbox' /etc/pacman.conf; then
-    sed -i '/^\[options\]/a DisableSandbox' /etc/pacman.conf
-fi
+# network"): turn the sandbox off, as CachyOS's own ISO build does. The CachyOS repo
+# script replaces pacman.conf, so this is applied again after it.
+sandbox_off() {
+    local opt
+    for opt in DisableSandbox DisableSandboxNetwork; do
+        grep -q "^$opt" /etc/pacman.conf || sed -i "/^\[options\]/a $opt" /etc/pacman.conf
+    done
+}
+sandbox_off
 
 # A fresh container has a keyring directory but no signing key; the CachyOS script needs
 # one to sign its repository key. --init does nothing when a key already exists.
@@ -32,7 +37,8 @@ if ! grep -q '^\[cachyos\]' /etc/pacman.conf; then
     tar -xf "$tmp/cachyos-repo.tar.xz" -C "$tmp"
     if [[ -n "${CI:-}" ]]; then
         # CI has no terminal: answer the script's confirmation questions with "yes"
-        (cd "$tmp/cachyos-repo" && yes | ./cachyos-repo.sh)
+        # a fixed amount of "y", not `yes |`: the latter ends the pipe with SIGPIPE (141)
+        (cd "$tmp/cachyos-repo" && printf 'y\n%.0s' {1..50} | ./cachyos-repo.sh)
     else
         (cd "$tmp/cachyos-repo" && ./cachyos-repo.sh)
     fi
@@ -40,6 +46,8 @@ if ! grep -q '^\[cachyos\]' /etc/pacman.conf; then
 else
     msg2 "CachyOS repositories already configured"
 fi
+
+sandbox_off
 
 msg "Installing build tools"
 pacman -S --noconfirm --needed \
