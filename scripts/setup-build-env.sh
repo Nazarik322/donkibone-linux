@@ -37,8 +37,9 @@ if ! grep -q '^\[cachyos\]' /etc/pacman.conf; then
     tar -xf "$tmp/cachyos-repo.tar.xz" -C "$tmp"
     if [[ -n "${CI:-}" ]]; then
         # CI has no terminal: answer the script's confirmation questions with "yes"
-        # a fixed amount of "y", not `yes |`: the latter ends the pipe with SIGPIPE (141)
-        (cd "$tmp/cachyos-repo" && printf 'y\n%.0s' {1..50} | ./cachyos-repo.sh)
+        # An endless "y" without a pipeline: `yes |` ends with SIGPIPE (141) under pipefail,
+        # and a fixed amount is swallowed by the first pacman (it reads stdin in blocks).
+        (cd "$tmp/cachyos-repo" && ./cachyos-repo.sh < <(yes))
     else
         (cd "$tmp/cachyos-repo" && ./cachyos-repo.sh)
     fi
