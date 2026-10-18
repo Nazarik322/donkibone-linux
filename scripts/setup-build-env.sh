@@ -14,6 +14,12 @@ command -v pacman >/dev/null || die "this must run on Arch Linux"
 msg "Updating the system"
 pacman -Syu --noconfirm --needed base-devel git curl
 
+# A fresh container has no pacman key yet; the CachyOS script needs one to sign its key.
+if [[ ! -d /etc/pacman.d/gnupg/private-keys-v1.d ]]; then
+    pacman-key --init
+    pacman-key --populate archlinux
+fi
+
 if ! grep -q '^\[cachyos\]' /etc/pacman.conf; then
     msg "Adding CachyOS repositories (official script, may ask for confirmation)"
     tmp="$(mktemp -d)"
