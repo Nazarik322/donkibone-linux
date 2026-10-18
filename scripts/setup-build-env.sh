@@ -14,6 +14,12 @@ command -v pacman >/dev/null || die "this must run on Arch Linux"
 msg "Updating the system"
 pacman -Syu --noconfirm --needed base-devel git curl
 
+# Containers cannot give pacman's hooks a private network ("could not isolate the
+# network"): turn the sandbox off, as CachyOS's own ISO build does.
+if ! grep -q '^DisableSandbox' /etc/pacman.conf; then
+    sed -i '/^\[options\]/a DisableSandbox' /etc/pacman.conf
+fi
+
 # A fresh container has a keyring directory but no signing key; the CachyOS script needs
 # one to sign its repository key. --init does nothing when a key already exists.
 pacman-key --init
