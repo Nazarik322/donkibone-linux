@@ -36,7 +36,7 @@ jobs:
         run: |
           chown -R builder:builder "$GITHUB_WORKSPACE"
           SUDO_USER=builder ./scripts/setup-build-env.sh
-          sudo -u builder env WORK_DIR=/home/builder/celestia-work bash -euo pipefail -c '
+          sudo -u builder env HOME=/home/builder WORK_DIR=/home/builder/celestia-work bash -euo pipefail -c '
             git config --global --add safe.directory "*"
             source scripts/common.sh
             render_pacman_conf

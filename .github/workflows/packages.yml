@@ -59,7 +59,7 @@ jobs:
           [ -n "$CELESTIA_SIGNING_KEY" ] || { echo "::error::secret CELESTIA_SIGNING_KEY is not set"; exit 1; }
           sudo -E -u builder env \
             CELESTIA_CHANNEL="$channel" LOCAL_REPO_NAME="celestia-$channel" \
-            WORK_DIR=/home/builder/celestia-work BUILD_MODE=container PUBLISH_ONLY_IF_BUILT=1 \
+            HOME=/home/builder WORK_DIR=/home/builder/celestia-work BUILD_MODE=container PUBLISH_ONLY_IF_BUILT=1 \
             CELESTIA_SIGNING_KEY="$CELESTIA_SIGNING_KEY" GH_TOKEN="$GH_TOKEN" \
             bash -euo pipefail -c '
               git config --global --add safe.directory "*"

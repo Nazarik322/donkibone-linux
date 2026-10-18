@@ -38,7 +38,7 @@ jobs:
 
       - name: Build the ISO
         run: |
-          sudo -E -u builder env WORK_DIR=/home/builder/celestia-work BUILD_MODE=container \
+          sudo -E -u builder env HOME=/home/builder WORK_DIR=/home/builder/celestia-work BUILD_MODE=container \
             CELESTIA_RESTORE=1 GH_TOKEN="$GH_TOKEN" \
             bash -euo pipefail -c '
               git config --global --add safe.directory "*"
