@@ -141,6 +141,16 @@ prepare_local_version() {  # <dir>
     fi
 }
 
+# makepkg verifies signed sources against the keys a PKGBUILD lists in validpgpkeys;
+# fetch exactly those (signature checking stays on).
+import_pgp_keys() {  # <srcinfo>
+    local key
+    while read -r key; do
+        [[ -n "$key" ]] || continue
+        gpg --batch --keyserver hkps://keyserver.ubuntu.com --recv-keys "$key"             || gpg --batch --keyserver hkps://keys.openpgp.org --recv-keys "$key"             || warn "could not fetch the signing key $key"
+    done < <(srcinfo_field "$1" 'validpgpkeys')
+}
+
 # Container mode: builds use the container's own pacman, which must see the local repo.
 container_init() {
     [[ "$BUILD_MODE" == container ]] || return 0
@@ -174,6 +184,7 @@ build_dir() {
         prepare_local_version "$dir"
         rm -f "$dir"/*.pkg.tar.*
         if [[ "$BUILD_MODE" == container ]]; then
+            import_pgp_keys "$info"
             (cd "$dir" && MAKEFLAGS="-j$(nproc)" makepkg -sf --noconfirm --needed) || die "build of ${dir##*/} failed"
         else
             ensure_chroot
